@@ -1,29 +1,40 @@
-FROM python:3.11
+FROM python:3.11-slim AS base
 
-# Install Node.js (>= 18) and necessary tools
+# Install Node.js 20 (LTS) and system deps
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends nodejs npm \
+  && apt-get install -y --no-install-recommends \
+       curl ca-certificates nodejs npm \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy uv from the official uv image
 COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /bin/
 
 WORKDIR /app
 
-# Copy dependency descriptor files first to leverage Docker cache
+# ── Python deps (cached layer) ────────────────────────────────────────
+COPY backend/pyproject.toml backend/uv.lock ./backend/
+RUN cd backend && uv sync --no-dev
+
+# ── Node deps (cached layer) ──────────────────────────────────────────
 COPY package.json package-lock.json ./
 COPY frontend/package.json frontend/package-lock.json ./frontend/
-COPY backend/pyproject.toml backend/uv.lock ./backend/
+RUN npm ci && npm ci --prefix frontend
 
-# Install dependencies (Node + Python)
-RUN npm ci \
-  && npm ci --prefix frontend \
-  && cd backend && uv sync
-
-# Copy project source code
+# ── Source ────────────────────────────────────────────────────────────
 COPY . .
+
+# ── Build Vue frontend ────────────────────────────────────────────────
+# VITE_API_BASE_URL injected at build time from docker-compose env
+ARG VITE_API_BASE_URL=https://aum.lol
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+RUN npm run build
 
 EXPOSE 3000 5001
 
-# Start both frontend and backend simultaneously (development mode)
-CMD ["npm", "run", "dev"]
+# ── Start: gunicorn (backend) + static file server (frontend) ─────────
+CMD ["sh", "-c", \
+  "cd backend && uv run gunicorn 'app:create_app()' \
+     --bind 0.0.0.0:5001 \
+     --workers 2 \
+     --timeout 600 \
+     --worker-class sync \
+     & npx --yes serve frontend/dist --listen tcp://0.0.0.0:3000 --no-clipboard"]
