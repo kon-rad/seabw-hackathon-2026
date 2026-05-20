@@ -78,7 +78,7 @@
         <span class="banner-sep">·</span>
         <span>Market: {{ (pmResult.market_price * 100).toFixed(1) }}%</span>
         <span class="banner-sep">·</span>
-        <span :class="pmResult.edge > 0 ? 'edge-pos' : 'edge-neg'">
+        <span :class="pmResult.edge > 0 ? 'edge-pos' : pmResult.edge < 0 ? 'edge-neg' : ''">
           Edge: {{ pmResult.edge > 0 ? '+' : '' }}{{ (pmResult.edge * 100).toFixed(1) }}%
         </span>
       </div>
