@@ -64,7 +64,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/index.js'
 
@@ -120,7 +120,16 @@ function scoreBadgeClass(score) {
   return 'badge-gray'
 }
 
-onMounted(fetchMarkets)
+let refreshTimer = null
+
+onMounted(() => {
+  fetchMarkets()
+  refreshTimer = setInterval(fetchMarkets, 5 * 60 * 1000)
+})
+
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <style scoped>
