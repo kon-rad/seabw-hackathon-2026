@@ -1,0 +1,91 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import BetDiscovery from '../views/BetDiscovery.vue'
+
+const routes = [
+  {
+    path: '/',
+    name: 'BetDiscovery',
+    component: BetDiscovery
+  },
+  {
+    path: '/classic',
+    name: 'Home',
+    component: () => import('../views/Home.vue')
+  },
+  {
+    path: '/polymarket/research/:marketId',
+    name: 'Research',
+    component: () => import('../views/ResearchView.vue'),
+    props: true
+  },
+  {
+    path: '/process/:projectId',
+    name: 'Process',
+    component: () => import('../views/MainView.vue'),
+    props: true
+  },
+  {
+    path: '/simulation/:simulationId',
+    name: 'Simulation',
+    component: () => import('../views/SimulationView.vue'),
+    props: true
+  },
+  {
+    path: '/simulation/:simulationId/start',
+    name: 'SimulationRun',
+    component: () => import('../views/SimulationRunView.vue'),
+    props: true
+  },
+  {
+    path: '/report/:reportId',
+    name: 'Report',
+    component: () => import('../views/ReportView.vue'),
+    props: true
+  },
+  {
+    path: '/interaction/:reportId',
+    name: 'Interaction',
+    component: () => import('../views/InteractionView.vue'),
+    props: true
+  },
+  {
+    path: '/replay/:simulationId',
+    name: 'Replay',
+    component: () => import('../views/ReplayView.vue'),
+    props: true
+  },
+  {
+    path: '/compare/:id1?/:id2?',
+    name: 'Compare',
+    component: () => import('../views/ComparisonView.vue'),
+    props: true
+  },
+  {
+    path: '/embed/:simulationId',
+    name: 'Embed',
+    component: () => import('../views/EmbedView.vue'),
+    props: true
+  },
+  {
+    path: '/explore',
+    name: 'Explore',
+    component: () => import('../views/ExploreView.vue')
+  },
+  {
+    // Dedicated URL for the "Verified Prediction" hall — same component
+    // as /explore but with the verified filter pre-applied. Keep it as a
+    // top-level path so it's a clean link to drop into threads about
+    // pre-incident simulations.
+    path: '/verified',
+    name: 'Verified',
+    component: () => import('../views/ExploreView.vue'),
+    props: { verifiedOnly: true }
+  }
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes
+})
+
+export default router

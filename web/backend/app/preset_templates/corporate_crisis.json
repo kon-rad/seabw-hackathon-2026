@@ -1,0 +1,82 @@
+{
+  "id": "corporate_crisis",
+  "name": "Corporate Crisis",
+  "category": "Business",
+  "description": "Simulate how a major corporation's PR crisis unfolds on social media. Watch as customers, employees, journalists, and activists shape the narrative and pressure the company to respond.",
+  "icon": "alert",
+  "difficulty": "medium",
+  "estimated_agents": 30,
+  "estimated_rounds": 72,
+  "tags": [
+    "corporate",
+    "PR crisis",
+    "brand reputation",
+    "boycott"
+  ],
+  "platforms": [
+    "twitter",
+    "reddit",
+    "polymarket"
+  ],
+  "simulation_requirement": "Simulate the public backlash on social media after a major tech company's data breach is revealed by investigative journalists. Track how affected users, privacy advocates, company employees, industry analysts, journalists, competitors, and government officials react over 72 hours. Focus on how the crisis narrative evolves, whether calls for boycotts gain traction, how the company's PR responses are received, and what factors determine whether the story fades or escalates.",
+  "seed_document": "# DataVault Inc. Data Breach: Crisis Timeline\n\n## The Revelation\nA major investigative news outlet has published an article revealing that DataVault Inc., a cloud storage company with 45 million users, suffered a data breach 3 months ago that exposed personal data including names, emails, phone numbers, and partial payment information for approximately 12 million users. The company did not disclose the breach publicly.\n\n## Key Facts\n- Breach occurred 3 months ago, affecting 12 million of 45 million users\n- Exposed data: full names, email addresses, phone numbers, last 4 digits of credit cards, and usage history\n- Company was aware within 48 hours of the breach but chose not to disclose\n- Internal emails (leaked to the journalist) show executives debating whether disclosure was legally required\n- The breach was caused by an unpatched vulnerability that had a fix available for 6 weeks\n- DataVault's stock dropped 8% in pre-market trading after the article\n\n## Company Response (Initial)\n- CEO released a statement 2 hours after the article: \"We take security seriously and have already patched the vulnerability. We are conducting a thorough investigation.\"\n- No mention of why the 3-month delay in disclosure\n- Company offered affected users 1 year of free credit monitoring\n- CTO posted a technical blog post about their security improvements\n\n## Stakeholder Landscape\n- **Affected Users**: 12 million people whose data was exposed, many discovering it from news rather than the company\n- **Privacy Advocates**: Organizations like EFF and Privacy International have been tracking corporate breach disclosure practices\n- **Company Employees**: Some are defending the company on social media, others are expressing frustration anonymously\n- **Industry Analysts**: Divided on whether this is a company-ending crisis or a temporary setback\n- **Competitors**: Some are running targeted ads highlighting their own security features\n- **Government Officials**: Two senators have already called for hearings\n- **Journalists**: Multiple outlets are now pursuing follow-up stories\n\n## Context\n- DataVault went public 18 months ago at a $3.2B valuation\n- The company recently won a major government contract for cloud services\n- CEO was named \"Tech Executive of the Year\" by a business magazine last quarter\n- A similar (smaller) breach at a competitor last year resulted in a $50M fine\n- Public trust in tech companies is at a 10-year low according to recent surveys",
+  "recommended_settings": {
+    "enable_twitter": true,
+    "enable_reddit": true,
+    "enable_polymarket": true
+  },
+  "counterfactual_branches": [
+    {
+      "id": "ceo_resigns",
+      "label": "CEO resigns on Day 2",
+      "description": "The CEO steps down 24h after the story breaks, replaced by an interim.",
+      "trigger_round": 24,
+      "injection": "The CEO of DataVault Inc. has just announced her resignation. The board has appointed the CTO as interim CEO. The outgoing CEO said: 'I take full responsibility for the delay in disclosure.'"
+    },
+    {
+      "id": "class_action",
+      "label": "Class-action suit filed",
+      "description": "A major law firm files a $1B class-action lawsuit by round 36.",
+      "trigger_round": 36,
+      "injection": "Cohen Milstein has filed a $1B class-action on behalf of the 12M affected users, alleging willful concealment of the breach."
+    },
+    {
+      "id": "competitor_breach",
+      "label": "Competitor has a bigger breach",
+      "description": "A direct competitor discloses a 40M-user breach, redirecting attention.",
+      "trigger_round": 48,
+      "injection": "CloudLocker Inc. (a direct competitor) has just disclosed a 40M-user breach — 3x the size of DataVault's. The news cycle is pivoting."
+    }
+  ],
+  "i18n": {
+    "zh-CN": {
+      "name": "企业危机",
+      "category": "商业",
+      "description": "模拟一家大企业在社交媒体上爆发的公关危机。观察客户、员工、记者与维权人士如何塑造叙事、施压公司作出回应。",
+      "tags": ["企业", "公关危机", "品牌声誉", "抵制"],
+      "counterfactual_branches": [
+        {
+          "id": "ceo_resigns",
+          "label": "CEO 在第 2 天辞职",
+          "description": "事件曝光 24 小时后 CEO 辞职,由临时 CEO 接替。",
+          "trigger_round": 24,
+          "injection": "DataVault Inc. CEO 刚刚宣布辞职。董事会已任命 CTO 为临时 CEO。卸任 CEO 表示:「我对延迟披露承担全部责任。」"
+        },
+        {
+          "id": "class_action",
+          "label": "提起集体诉讼",
+          "description": "在第 36 轮前,一家大型律所提起 10 亿美元集体诉讼。",
+          "trigger_round": 36,
+          "injection": "Cohen Milstein 代表 1200 万受影响用户提起 10 亿美元集体诉讼,指控公司故意隐瞒泄露事件。"
+        },
+        {
+          "id": "competitor_breach",
+          "label": "竞争对手出现更大泄露事件",
+          "description": "一家直接竞争对手披露 4000 万用户数据泄露,转移注意力。",
+          "trigger_round": 48,
+          "injection": "CloudLocker Inc.(直接竞争对手)刚刚披露 4000 万用户数据泄露 — 是 DataVault 的 3 倍。新闻焦点正在转移。"
+        }
+      ]
+    }
+  }
+}

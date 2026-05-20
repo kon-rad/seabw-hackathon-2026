@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ──────────────────────────────────────────────────────────
+# MiroShark Launcher
+# ──────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BACKEND_PORT=5001
+FRONTEND_PORT=3000
+NEO4J_BOLT_PORT=7687
+PIDFILE="$SCRIPT_DIR/.miroshark.pids"
+
+BACKEND_PID=""
+FRONTEND_PID=""
+
+# Colors (disabled when not a terminal)
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+    CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
+fi
+
+# ── Utility ───────────────────────────────────────────────
+
+info()    { printf "${CYAN}  [*]${RESET} %s\n" "$*"; }
+success() { printf "${GREEN}  [+]${RESET} %s\n" "$*"; }
+warn()    { printf "${YELLOW}  [!]${RESET} %s\n" "$*"; }
+error()   { printf "${RED}  [-]${RESET} %s\n" "$*"; }
+header()  { printf "\n${BOLD}  === %s ===${RESET}\n\n" "$*"; }
+
+check_port() {
+    lsof -iTCP:"$1" -sTCP:LISTEN -t &>/dev/null
+}
+
+kill_port() {
+    local port=$1
+    local pids
+    pids=$(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+        for pid in $pids; do
+            kill -TERM "$pid" 2>/dev/null || true
+        done
+        sleep 1
+        for pid in $pids; do
+            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+        done
+    fi
+}
+
+wait_for_port() {
+    local port=$1 timeout=${2:-30} elapsed=0
+    while ! check_port "$port"; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if [[ $elapsed -ge $timeout ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# ── Version helpers ───────────────────────────────────────
+
+version_ge() {
+    # Returns 0 if $1 >= $2 (major.minor comparison)
+    local maj1 min1 maj2 min2
+    maj1=$(echo "$1" | cut -d. -f1)
+    min1=$(echo "$1" | cut -d. -f2)
+    maj2=$(echo "$2" | cut -d. -f1)
+    min2=$(echo "$2" | cut -d. -f2)
+    if [[ $maj1 -gt $maj2 ]]; then return 0; fi
+    if [[ $maj1 -eq $maj2 && $min1 -ge $min2 ]]; then return 0; fi
+    return 1
+}
+
+# ── Detect platform ───────────────────────────────────────
+
+is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
+
+pkg_hint() {
+    if is_macos; then
+        echo "brew install $1"
+    else
+        echo "apt install $1  (or your distro's equivalent)"
+    fi
+}
+
+# ── Dependency Checks ─────────────────────────────────────
+
+check_deps() {
+    header "Dependencies"
+    local missing=0
+
+    # Python 3.11+
+    if command -v python3 &>/dev/null; then
+        local pyver
+        pyver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        if version_ge "$pyver" "3.11"; then
+            success "Python $pyver"
+        else
+            error "Python $pyver found — need 3.11+"
+            info "  $(pkg_hint python@3.11)"
+            missing=1
+        fi
+    else
+        error "Python 3 not found"
+        info "  $(pkg_hint python@3.11)"
+        missing=1
+    fi
+
+    # uv
+    if command -v uv &>/dev/null; then
+        success "uv $(uv --version 2>/dev/null | head -1 | awk '{print $2}')"
+    else
+        error "uv not found (Python package manager)"
+        info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+        missing=1
+    fi
+
+    # Node 18+
+    if command -v node &>/dev/null; then
+        local nodever
+        nodever=$(node --version | sed 's/^v//')
+        local nodemaj
+        nodemaj=$(echo "$nodever" | cut -d. -f1)
+        if [[ $nodemaj -ge 18 ]]; then
+            success "Node.js $nodever"
+        else
+            error "Node.js $nodever found — need 18+"
+            info "  $(pkg_hint node)"
+            missing=1
+        fi
+    else
+        error "Node.js not found"
+        info "  $(pkg_hint node)"
+        missing=1
+    fi
+
+    # npm
+    if command -v npm &>/dev/null; then
+        success "npm $(npm --version 2>/dev/null)"
+    else
+        error "npm not found"
+        info "  Comes with Node.js — install Node first"
+        missing=1
+    fi
+
+    # Neo4j or Docker (at least one)
+    local has_neo4j=0 has_docker=0
+    if command -v neo4j &>/dev/null; then
+        success "Neo4j CLI available"
+        has_neo4j=1
+    fi
+    if command -v docker &>/dev/null; then
+        success "Docker available"
+        has_docker=1
+    fi
+    if [[ $has_neo4j -eq 0 && $has_docker -eq 0 ]]; then
+        warn "Neither Neo4j CLI nor Docker found — need one for the database"
+        info "  Option A: $(pkg_hint neo4j)"
+        info "  Option B: Install Docker — https://docs.docker.com/get-docker/"
+    fi
+
+    echo ""
+    return $missing
+}
+
+# ── Environment ───────────────────────────────────────────
+
+ensure_env() {
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        success ".env file found"
+    elif [[ -f "$SCRIPT_DIR/.env.example" ]]; then
+        cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+        warn ".env created from .env.example"
+        warn "Edit .env to configure your LLM_API_KEY and other settings"
+        info "  ${BOLD}$SCRIPT_DIR/.env${RESET}"
+    else
+        error "No .env or .env.example found"
+        return 1
+    fi
+}
+
+# ── Neo4j ─────────────────────────────────────────────────
+
+ensure_neo4j() {
+    header "Neo4j"
+
+    if check_port "$NEO4J_BOLT_PORT"; then
+        success "Neo4j already running on port $NEO4J_BOLT_PORT"
+        return 0
+    fi
+
+    # Try local CLI first
+    if command -v neo4j &>/dev/null; then
+        info "Starting Neo4j via CLI..."
+        neo4j start 2>/dev/null || true
+        if wait_for_port "$NEO4J_BOLT_PORT" 30; then
+            success "Neo4j started (bolt://localhost:$NEO4J_BOLT_PORT)"
+            return 0
+        else
+            warn "Neo4j CLI started but port $NEO4J_BOLT_PORT not responding after 30s"
+            info "  Check: neo4j status / neo4j console"
+        fi
+    fi
+
+    # Try Docker
+    local docker_cmd=""
+    if command -v docker &>/dev/null; then
+        if docker compose version &>/dev/null; then
+            docker_cmd="docker compose"
+        elif command -v docker-compose &>/dev/null; then
+            docker_cmd="docker-compose"
+        fi
+    fi
+
+    if [[ -n "$docker_cmd" ]]; then
+        info "Starting Neo4j via Docker..."
+        (cd "$SCRIPT_DIR" && $docker_cmd up -d neo4j) 2>&1 | while IFS= read -r line; do
+            info "  $line"
+        done
+        if wait_for_port "$NEO4J_BOLT_PORT" 45; then
+            success "Neo4j container started (bolt://localhost:$NEO4J_BOLT_PORT)"
+            return 0
+        else
+            warn "Neo4j container started but port $NEO4J_BOLT_PORT not responding after 45s"
+            info "  Check: $docker_cmd logs neo4j"
+        fi
+    fi
+
+    error "Could not start Neo4j"
+    info "  Install Neo4j: $(pkg_hint neo4j)"
+    info "  Or use Docker: https://docs.docker.com/get-docker/"
+    return 1
+}
+
+# ── Install Dependencies ──────────────────────────────────
+
+install_deps() {
+    local force=${1:-}
+    header "Dependencies Install"
+
+    # Frontend
+    if [[ "$force" == "--force" ]] || [[ ! -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
+        info "Installing frontend dependencies..."
+        (cd "$SCRIPT_DIR/frontend" && npm install --loglevel=warn) 2>&1 | tail -3
+        success "Frontend deps installed"
+    else
+        success "Frontend deps present"
+    fi
+
+    # Backend
+    if [[ "$force" == "--force" ]] || [[ ! -d "$SCRIPT_DIR/backend/.venv" ]]; then
+        info "Installing backend dependencies..."
+        (cd "$SCRIPT_DIR/backend" && uv sync) 2>&1 | tail -3
+        success "Backend deps installed"
+    else
+        success "Backend deps present"
+    fi
+}
+
+# ── Kill Stale ────────────────────────────────────────────
+
+kill_stale() {
+    local killed=0
+    if check_port "$FRONTEND_PORT"; then
+        warn "Killing stale process on port $FRONTEND_PORT"
+        kill_port "$FRONTEND_PORT"
+        killed=1
+    fi
+    if check_port "$BACKEND_PORT"; then
+        warn "Killing stale process on port $BACKEND_PORT"
+        kill_port "$BACKEND_PORT"
+        killed=1
+    fi
+    # Clean stale PID file
+    if [[ -f "$PIDFILE" ]]; then
+        while IFS= read -r pid; do
+            kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null || true
+        done < "$PIDFILE"
+        rm -f "$PIDFILE"
+    fi
+    if [[ $killed -eq 0 ]]; then
+        success "No stale processes"
+    fi
+}
+
+# ── Cleanup / Signal Handler ─────────────────────────────
+
+cleanup() {
+    trap '' SIGINT SIGTERM  # Prevent recursive signals
+    echo ""
+    info "Shutting down MiroShark..."
+
+    for pid in "$BACKEND_PID" "$FRONTEND_PID"; do
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+    done
+
+    sleep 1
+
+    for pid in "$BACKEND_PID" "$FRONTEND_PID"; do
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    done
+
+    rm -f "$PIDFILE"
+    success "Stopped."
+    exit 0
+}
+
+# ── Commands ──────────────────────────────────────────────
+
+cmd_start() {
+    printf "\n"
+    printf "${BOLD}${CYAN}  ╔══════════════════════════════════╗${RESET}\n"
+    printf "${BOLD}${CYAN}  ║${RESET}${BOLD}          M I R O S H A R K         ${CYAN}║${RESET}\n"
+    printf "${BOLD}${CYAN}  ╚══════════════════════════════════╝${RESET}\n"
+
+    check_deps || {
+        echo ""
+        error "Install missing dependencies above, then re-run ./miroshark"
+        exit 1
+    }
+
+    header "Environment"
+    ensure_env || exit 1
+
+    ensure_neo4j || exit 1
+
+    install_deps
+
+    header "Starting"
+    kill_stale
+
+    # Start backend
+    (cd "$SCRIPT_DIR/backend" && exec uv run python run.py) &
+    BACKEND_PID=$!
+
+    # Start frontend
+    (cd "$SCRIPT_DIR/frontend" && exec npx vite --host) &
+    FRONTEND_PID=$!
+
+    # Write PID file
+    printf "%s\n%s\n" "$BACKEND_PID" "$FRONTEND_PID" > "$PIDFILE"
+
+    # Set trap after PIDs are known
+    trap cleanup SIGINT SIGTERM
+
+    # Wait for both to be ready
+    sleep 3
+    echo ""
+    printf "${BOLD}  ┌──────────────────────────────────────┐${RESET}\n"
+    printf "${BOLD}  │${RESET}  App:  ${GREEN}http://localhost:${FRONTEND_PORT}${RESET}          ${BOLD}│${RESET}\n"
+    printf "${BOLD}  │${RESET}  API:  ${DIM}http://localhost:${BACKEND_PORT}${RESET}          ${BOLD}│${RESET}\n"
+    printf "${BOLD}  └──────────────────────────────────────┘${RESET}\n"
+    echo ""
+    info "Press ${BOLD}Ctrl+C${RESET} to stop"
+    echo ""
+
+    # Block until processes exit or signal received
+    wait
+}
+
+cmd_stop() {
+    header "Stopping MiroShark"
+
+    local stopped=0
+
+    if [[ -f "$PIDFILE" ]]; then
+        while IFS= read -r pid; do
+            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid" 2>/dev/null || true
+                info "Stopped PID $pid"
+                stopped=1
+            fi
+        done < "$PIDFILE"
+        rm -f "$PIDFILE"
+    fi
+
+    if check_port "$FRONTEND_PORT"; then
+        kill_port "$FRONTEND_PORT"
+        info "Killed process on port $FRONTEND_PORT"
+        stopped=1
+    fi
+    if check_port "$BACKEND_PORT"; then
+        kill_port "$BACKEND_PORT"
+        info "Killed process on port $BACKEND_PORT"
+        stopped=1
+    fi
+
+    if [[ $stopped -eq 0 ]]; then
+        info "Nothing running"
+    else
+        success "MiroShark stopped"
+    fi
+}
+
+cmd_status() {
+    printf "\n"
+    printf "${BOLD}${CYAN}  MiroShark Status${RESET}\n\n"
+
+    # Backend
+    if check_port "$BACKEND_PORT"; then
+        local health
+        health=$(curl -s --max-time 2 "http://localhost:$BACKEND_PORT/health" 2>/dev/null || echo "")
+        if echo "$health" | grep -q '"ok"'; then
+            success "Backend ............. running (port $BACKEND_PORT) — healthy"
+        else
+            warn  "Backend ............. running (port $BACKEND_PORT) — not responding to health check"
+        fi
+    else
+        error "Backend ............. stopped"
+    fi
+
+    # Frontend
+    if check_port "$FRONTEND_PORT"; then
+        success "Frontend ............ running (port $FRONTEND_PORT)"
+    else
+        error "Frontend ............ stopped"
+    fi
+
+    # Neo4j
+    if check_port "$NEO4J_BOLT_PORT"; then
+        success "Neo4j ............... running (port $NEO4J_BOLT_PORT)"
+    else
+        error "Neo4j ............... stopped"
+    fi
+
+    # Ollama (informational)
+    if check_port 11434; then
+        success "Ollama .............. running (port 11434)"
+    else
+        printf "${DIM}  [ ] Ollama .............. not running (optional)${RESET}\n"
+    fi
+
+    echo ""
+
+    # Files
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        success ".env ................ present"
+    else
+        error ".env ................ missing"
+    fi
+
+    if [[ -d "$SCRIPT_DIR/frontend/node_modules" ]]; then
+        success "Frontend deps ....... installed"
+    else
+        error "Frontend deps ....... not installed"
+    fi
+
+    if [[ -d "$SCRIPT_DIR/backend/.venv" ]]; then
+        success "Backend deps ........ installed"
+    else
+        error "Backend deps ........ not installed"
+    fi
+
+    echo ""
+}
+
+cmd_setup() {
+    printf "\n"
+    printf "${BOLD}${CYAN}  MiroShark Setup${RESET}\n"
+
+    check_deps || {
+        echo ""
+        error "Install missing dependencies above, then re-run ./miroshark setup"
+        exit 1
+    }
+
+    header "Environment"
+    ensure_env || exit 1
+
+    install_deps --force
+
+    echo ""
+    success "Setup complete. Run ${BOLD}./miroshark${RESET}${GREEN} to start.${RESET}"
+    echo ""
+}
+
+cmd_help() {
+    printf "\n"
+    printf "${BOLD}Usage:${RESET} ./miroshark [command]\n\n"
+    printf "${BOLD}Commands:${RESET}\n"
+    printf "  ${GREEN}start${RESET}    Start MiroShark (default)\n"
+    printf "  ${GREEN}stop${RESET}     Stop all MiroShark processes\n"
+    printf "  ${GREEN}status${RESET}   Show service status\n"
+    printf "  ${GREEN}setup${RESET}    Force reinstall all dependencies\n"
+    printf "  ${GREEN}help${RESET}     Show this help message\n"
+    echo ""
+}
+
+# ── Main Dispatcher ───────────────────────────────────────
+
+case "${1:-}" in
+    ""|start)   cmd_start ;;
+    stop)       cmd_stop ;;
+    status)     cmd_status ;;
+    setup)      cmd_setup ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        error "Unknown command: $1"
+        cmd_help
+        exit 1
+        ;;
+esac

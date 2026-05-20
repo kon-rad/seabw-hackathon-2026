@@ -1,0 +1,3118 @@
+"""
+Wonderwall multi-platform parallel simulation preset script
+Runs Twitter, Reddit, and Polymarket simulations concurrently, reading the same configuration file
+
+Features:
+- Multi-platform (Twitter + Reddit + Polymarket) parallel simulation
+- Polymarket prediction market via Wonderwall's SimulationConfig framework
+- Cross-platform awareness: agents see their activity on other platforms (--cross-platform)
+- Does not close the environment immediately after simulation; enters command waiting mode
+- Supports receiving Interview commands via IPC
+- Supports single Agent interview and batch interview
+- Supports remote environment shutdown command
+
+Usage:
+    python run_parallel_simulation.py --config simulation_config.json
+    python run_parallel_simulation.py --config simulation_config.json --cross-platform  # Agents aware of their activity on other platforms
+    python run_parallel_simulation.py --config simulation_config.json --no-wait  # Close immediately after completion
+    python run_parallel_simulation.py --config simulation_config.json --twitter-only
+    python run_parallel_simulation.py --config simulation_config.json --reddit-only
+    python run_parallel_simulation.py --config simulation_config.json --polymarket-only
+
+Log structure:
+    sim_xxx/
+    ├── twitter/
+    │   └── actions.jsonl    # Twitter platform action log
+    ├── reddit/
+    │   └── actions.jsonl    # Reddit platform action log
+    ├── simulation.log       # Main simulation process log
+    └── run_state.json       # Run state (for API queries)
+"""
+
+# ============================================================
+# Fix Windows encoding issues: set UTF-8 encoding before all imports
+# This fixes the issue where Wonderwall third-party libraries read files without specifying encoding
+# ============================================================
+import sys
+import os
+
+if sys.platform == 'win32':
+    # Set Python default I/O encoding to UTF-8
+    # This affects all open() calls that don't specify encoding
+    os.environ.setdefault('PYTHONUTF8', '1')
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    
+    # Reconfigure standard output streams to UTF-8 (fix console encoding issues)
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    
+    # Force set default encoding (affects the default encoding of the open() function)
+    # Note: This needs to be set at Python startup; setting it at runtime may not take effect
+    # Therefore we also need to monkey-patch the built-in open function
+    import builtins
+    _original_open = builtins.open
+    
+    def _utf8_open(file, mode='r', buffering=-1, encoding=None, errors=None, 
+                   newline=None, closefd=True, opener=None):
+        """
+        Wrapper for open() that defaults to UTF-8 encoding for text mode
+        This fixes the issue where third-party libraries (e.g., Wonderwall) read files without specifying encoding
+        """
+        # Only set default encoding for text mode (non-binary) when encoding is not specified
+        if encoding is None and 'b' not in mode:
+            encoding = 'utf-8'
+        return _original_open(file, mode, buffering, encoding, errors, 
+                              newline, closefd, opener)
+    
+    builtins.open = _utf8_open
+
+import argparse
+import asyncio
+import json
+import logging
+import random
+import signal
+import sqlite3
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
+
+
+# Global variables: used for signal handling
+_shutdown_event = None
+_cleanup_done = False
+
+# Add backend directory to path
+# Script is located in backend/scripts/ directory
+_scripts_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_dir = os.path.abspath(os.path.join(_scripts_dir, '..'))
+_project_root = os.path.abspath(os.path.join(_backend_dir, '..'))
+sys.path.insert(0, _scripts_dir)
+sys.path.insert(0, _backend_dir)
+
+# Load .env file from project root (contains LLM_API_KEY and other configurations)
+from dotenv import load_dotenv
+_env_file = os.path.join(_project_root, '.env')
+if os.path.exists(_env_file):
+    load_dotenv(_env_file)
+    print(f"Loaded environment config: {_env_file}")
+
+# Apply the locale chosen in the UI (forwarded as MIROSHARK_LOCALE by the
+# parent Flask process). This activates the prompt registry's locale
+# fallback so Twitter/Reddit/Polymarket personas speak the right language.
+try:
+    from app.utils.i18n import set_active_locale as _set_active_locale
+    _locale_env = os.environ.get('MIROSHARK_LOCALE', '').strip()
+    if _locale_env:
+        _set_active_locale(_locale_env)
+except Exception:
+    pass
+else:
+    # Try loading backend/.env
+    _backend_env = os.path.join(_backend_dir, '.env')
+    if os.path.exists(_backend_env):
+        load_dotenv(_backend_env)
+        print(f"Loaded environment config: {_backend_env}")
+
+
+class MaxTokensWarningFilter(logging.Filter):
+    """Filter out camel-ai warnings about max_tokens (we intentionally don't set max_tokens, letting the model decide)"""
+
+    def filter(self, record):
+        # Filter out log entries containing max_tokens warnings
+        if "max_tokens" in record.getMessage() and "Invalid or missing" in record.getMessage():
+            return False
+        return True
+
+
+# Add filter immediately at module load time to ensure it takes effect before camel code runs
+logging.getLogger().addFilter(MaxTokensWarningFilter())
+
+
+def disable_wonderwall_logging():
+    """
+    Disable verbose log output from the Wonderwall library
+    Wonderwall logs are too verbose (logging each agent's observations and actions); we use our own action_logger
+    """
+    # Disable all Wonderwall loggers
+    wonderwall_loggers = [
+        "social.agent",
+        "social.twitter", 
+        "social.rec",
+        "wonderwall.env",
+        "table",
+    ]
+    
+    for logger_name in wonderwall_loggers:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.CRITICAL)  # Only log critical errors
+        logger.handlers.clear()
+        logger.propagate = False
+
+
+def init_logging_for_simulation(simulation_dir: str):
+    """
+    Initialize logging configuration for simulation
+
+    Args:
+        simulation_dir: Simulation directory path
+    """
+    # Disable Wonderwall verbose logging
+    disable_wonderwall_logging()
+    
+    # Clean up old log directory (if it exists)
+    old_log_dir = os.path.join(simulation_dir, "log")
+    if os.path.exists(old_log_dir):
+        import shutil
+        shutil.rmtree(old_log_dir, ignore_errors=True)
+
+
+from action_logger import SimulationLogManager, PlatformActionLogger, write_simulation_event
+from cross_platform_digest import CrossPlatformLog, inject_cross_platform_context
+from belief_integration import BeliefTracker
+from wonderwall.social_agent.belief_state import inject_belief_context
+from director_events import consume_pending_events, inject_director_event_context
+from counterfactual_loader import load_counterfactual
+from agent_guidelines import inject_posting_rules_into_graph
+
+# Per-round hard timeout (seconds). Bounded so a hung LLM call can't freeze
+# the whole run forever. Override via env for slow backends.
+_ROUND_TIMEOUT_SECONDS = int(os.environ.get('MIROSHARK_ROUND_TIMEOUT', '600'))
+
+
+async def _safe_env_step(env, actions, round_num: int, log_info) -> bool:
+    """Run env.step(actions) with timeout + exception isolation.
+
+    Returns True on success, False on timeout or exception. A False return
+    means the round yielded no actions; callers should skip post-round
+    processing and continue to the next round rather than crashing the run.
+    """
+    try:
+        await asyncio.wait_for(
+            env.step(actions), timeout=_ROUND_TIMEOUT_SECONDS
+        )
+        return True
+    except asyncio.TimeoutError:
+        log_info(
+            f"Round {round_num + 1} env.step timed out after "
+            f"{_ROUND_TIMEOUT_SECONDS}s — skipping round"
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — runner must survive agent failures
+        log_info(f"Round {round_num + 1} env.step error: {exc!r} — skipping round")
+        return False
+from market_media_bridge import (
+    MarketMediaBridge,
+    inject_market_context,
+    inject_sentiment_context,
+)
+from round_memory import RoundMemory, inject_round_memory
+
+# Per-agent MCP tools (OpenMiro-style). Entirely optional — gated by
+# MCP_AGENT_TOOLS_ENABLED and by each persona's own tools_enabled flag.
+try:
+    from mcp_agent_bridge import (
+        MCPAgentBridge,
+        parse_tool_calls as _mcp_parse_tool_calls,
+    )
+    from mcp_agent_injection import (
+        inject_mcp_catalogue,
+        inject_mcp_results,
+    )
+    _MCP_IMPORT_OK = True
+except Exception:  # noqa: BLE001 — runner must run without MCP deps
+    MCPAgentBridge = None  # type: ignore
+    _mcp_parse_tool_calls = None  # type: ignore
+    inject_mcp_catalogue = None  # type: ignore
+    inject_mcp_results = None  # type: ignore
+    _MCP_IMPORT_OK = False
+
+try:
+    from camel.models import ModelFactory
+    from camel.types import ModelPlatformType
+    import wonderwall
+    from wonderwall import (
+        ActionType,
+        LLMAction,
+        ManualAction,
+        generate_twitter_agent_graph,
+        generate_reddit_agent_graph,
+        AgentGraph,
+    )
+    from wonderwall.social_agent.agent import SocialAgent
+    from wonderwall.social_platform.config import UserInfo
+    from wonderwall.simulations.polymarket import polymarket_simulation
+except ImportError as e:
+    print(f"Error: Missing dependency {e}")
+    print("Please install first: pip install -e ../wonderwall camel-ai")
+    sys.exit(1)
+
+
+# Available Twitter actions (excluding INTERVIEW, which can only be triggered manually via ManualAction)
+TWITTER_ACTIONS = [
+    ActionType.CREATE_POST,
+    ActionType.LIKE_POST,
+    ActionType.REPOST,
+    ActionType.FOLLOW,
+    ActionType.DO_NOTHING,
+    ActionType.QUOTE_POST,
+]
+
+# Available Reddit actions (excluding INTERVIEW, which can only be triggered manually via ManualAction)
+REDDIT_ACTIONS = [
+    ActionType.LIKE_POST,
+    ActionType.DISLIKE_POST,
+    ActionType.CREATE_POST,
+    ActionType.CREATE_COMMENT,
+    ActionType.LIKE_COMMENT,
+    ActionType.DISLIKE_COMMENT,
+    ActionType.SEARCH_POSTS,
+    ActionType.SEARCH_USER,
+    ActionType.TREND,
+    ActionType.REFRESH,
+    ActionType.DO_NOTHING,
+    ActionType.FOLLOW,
+    ActionType.MUTE,
+]
+
+
+# IPC-related constants
+IPC_COMMANDS_DIR = "ipc_commands"
+IPC_RESPONSES_DIR = "ipc_responses"
+ENV_STATUS_FILE = "env_status.json"
+
+class CommandType:
+    """Command type constants"""
+    INTERVIEW = "interview"
+    BATCH_INTERVIEW = "batch_interview"
+    CLOSE_ENV = "close_env"
+
+
+class ParallelIPCHandler:
+    """
+    Dual-platform IPC command handler
+
+    Manages environments for both platforms and handles Interview commands
+    """
+    
+    def __init__(
+        self,
+        simulation_dir: str,
+        twitter_env=None,
+        twitter_agent_graph=None,
+        reddit_env=None,
+        reddit_agent_graph=None
+    ):
+        self.simulation_dir = simulation_dir
+        self.twitter_env = twitter_env
+        self.twitter_agent_graph = twitter_agent_graph
+        self.reddit_env = reddit_env
+        self.reddit_agent_graph = reddit_agent_graph
+        
+        self.commands_dir = os.path.join(simulation_dir, IPC_COMMANDS_DIR)
+        self.responses_dir = os.path.join(simulation_dir, IPC_RESPONSES_DIR)
+        self.status_file = os.path.join(simulation_dir, ENV_STATUS_FILE)
+        
+        # Ensure directories exist
+        os.makedirs(self.commands_dir, exist_ok=True)
+        os.makedirs(self.responses_dir, exist_ok=True)
+
+    def update_status(self, status: str):
+        """Update environment status (includes PID to prevent stale overwrites)"""
+        with open(self.status_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                "status": status,
+                "pid": os.getpid(),
+                "twitter_available": self.twitter_env is not None,
+                "reddit_available": self.reddit_env is not None,
+                "timestamp": datetime.now().isoformat()
+            }, f, ensure_ascii=False, indent=2)
+    
+    def poll_command(self) -> Optional[Dict[str, Any]]:
+        """Poll for pending commands"""
+        if not os.path.exists(self.commands_dir):
+            return None
+        
+        # Get command files (sorted by time)
+        command_files = []
+        for filename in os.listdir(self.commands_dir):
+            if filename.endswith('.json'):
+                filepath = os.path.join(self.commands_dir, filename)
+                command_files.append((filepath, os.path.getmtime(filepath)))
+
+        command_files.sort(key=lambda x: x[1])
+
+        for filepath, _ in command_files:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+        return None
+
+    def send_response(self, command_id: str, status: str, result: Dict = None, error: str = None):
+        """Send response"""
+        response = {
+            "command_id": command_id,
+            "status": status,
+            "result": result,
+            "error": error,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        response_file = os.path.join(self.responses_dir, f"{command_id}.json")
+        with open(response_file, 'w', encoding='utf-8') as f:
+            json.dump(response, f, ensure_ascii=False, indent=2)
+        
+        # Delete command file
+        command_file = os.path.join(self.commands_dir, f"{command_id}.json")
+        try:
+            os.remove(command_file)
+        except OSError:
+            pass
+
+    def _get_env_and_graph(self, platform: str):
+        """
+        Get the environment and agent_graph for the specified platform
+
+        Args:
+            platform: Platform name ("twitter" or "reddit")
+
+        Returns:
+            (env, agent_graph, platform_name) or (None, None, None)
+        """
+        if platform == "twitter" and self.twitter_env:
+            return self.twitter_env, self.twitter_agent_graph, "twitter"
+        elif platform == "reddit" and self.reddit_env:
+            return self.reddit_env, self.reddit_agent_graph, "reddit"
+        else:
+            return None, None, None
+    
+    async def _interview_single_platform(self, agent_id: int, prompt: str, platform: str) -> Dict[str, Any]:
+        """
+        Execute an Interview on a single platform
+
+        Returns:
+            Dictionary containing the result, or dictionary containing an error
+        """
+        env, agent_graph, actual_platform = self._get_env_and_graph(platform)
+        
+        if not env or not agent_graph:
+            return {"platform": platform, "error": f"{platform} platform is not available"}
+        
+        try:
+            agent = agent_graph.get_agent(agent_id)
+            interview_action = ManualAction(
+                action_type=ActionType.INTERVIEW,
+                action_args={"prompt": prompt}
+            )
+            actions = {agent: interview_action}
+            await env.step(actions)
+            
+            result = self._get_interview_result(agent_id, actual_platform)
+            result["platform"] = actual_platform
+            return result
+            
+        except Exception as e:
+            return {"platform": platform, "error": str(e)}
+    
+    async def handle_interview(self, command_id: str, agent_id: int, prompt: str, platform: str = None) -> bool:
+        """
+        Handle a single Agent interview command
+
+        Args:
+            command_id: Command ID
+            agent_id: Agent ID
+            prompt: Interview question
+            platform: Specified platform (optional)
+                - "twitter": Interview on Twitter platform only
+                - "reddit": Interview on Reddit platform only
+                - None/unspecified: Interview on both platforms simultaneously, return consolidated results
+
+        Returns:
+            True indicates success, False indicates failure
+        """
+        # If a platform is specified, only interview on that platform
+        if platform in ("twitter", "reddit"):
+            result = await self._interview_single_platform(agent_id, prompt, platform)
+            
+            if "error" in result:
+                self.send_response(command_id, "failed", error=result["error"])
+                print(f"  Interview failed: agent_id={agent_id}, platform={platform}, error={result['error']}")
+                return False
+            else:
+                self.send_response(command_id, "completed", result=result)
+                print(f"  Interview completed: agent_id={agent_id}, platform={platform}")
+                return True
+        
+        # No platform specified: interview on both platforms simultaneously
+        if not self.twitter_env and not self.reddit_env:
+            self.send_response(command_id, "failed", error="No simulation environment available")
+            return False
+        
+        results = {
+            "agent_id": agent_id,
+            "prompt": prompt,
+            "platforms": {}
+        }
+        success_count = 0
+        
+        # Interview both platforms in parallel
+        tasks = []
+        platforms_to_interview = []
+        
+        if self.twitter_env:
+            tasks.append(self._interview_single_platform(agent_id, prompt, "twitter"))
+            platforms_to_interview.append("twitter")
+        
+        if self.reddit_env:
+            tasks.append(self._interview_single_platform(agent_id, prompt, "reddit"))
+            platforms_to_interview.append("reddit")
+        
+        # Execute in parallel
+        platform_results = await asyncio.gather(*tasks)
+        
+        for platform_name, platform_result in zip(platforms_to_interview, platform_results):
+            results["platforms"][platform_name] = platform_result
+            if "error" not in platform_result:
+                success_count += 1
+        
+        if success_count > 0:
+            self.send_response(command_id, "completed", result=results)
+            print(f"  Interview completed: agent_id={agent_id}, successful platforms={success_count}/{len(platforms_to_interview)}")
+            return True
+        else:
+            errors = [f"{p}: {r.get('error', 'unknown error')}" for p, r in results["platforms"].items()]
+            self.send_response(command_id, "failed", error="; ".join(errors))
+            print(f"  Interview failed: agent_id={agent_id}, all platforms failed")
+            return False
+    
+    async def handle_batch_interview(self, command_id: str, interviews: List[Dict], platform: str = None) -> bool:
+        """
+        Handle batch interview command
+
+        Args:
+            command_id: Command ID
+            interviews: [{"agent_id": int, "prompt": str, "platform": str(optional)}, ...]
+            platform: Default platform (can be overridden per interview item)
+                - "twitter": Interview on Twitter platform only
+                - "reddit": Interview on Reddit platform only
+                - None/unspecified: Interview each Agent on both platforms simultaneously
+        """
+        # Group by platform
+        twitter_interviews = []
+        reddit_interviews = []
+        both_platforms_interviews = []  # Need to interview on both platforms
+        
+        for interview in interviews:
+            item_platform = interview.get("platform", platform)
+            if item_platform == "twitter":
+                twitter_interviews.append(interview)
+            elif item_platform == "reddit":
+                reddit_interviews.append(interview)
+            else:
+                # No platform specified: interview on both platforms
+                both_platforms_interviews.append(interview)
+        
+        # Split both_platforms_interviews into the two platforms
+        if both_platforms_interviews:
+            if self.twitter_env:
+                twitter_interviews.extend(both_platforms_interviews)
+            if self.reddit_env:
+                reddit_interviews.extend(both_platforms_interviews)
+        
+        results = {}
+        
+        # Process Twitter platform interviews
+        if twitter_interviews and self.twitter_env:
+            try:
+                twitter_actions = {}
+                for interview in twitter_interviews:
+                    agent_id = interview.get("agent_id")
+                    prompt = interview.get("prompt", "")
+                    try:
+                        agent = self.twitter_agent_graph.get_agent(agent_id)
+                        twitter_actions[agent] = ManualAction(
+                            action_type=ActionType.INTERVIEW,
+                            action_args={"prompt": prompt}
+                        )
+                    except Exception as e:
+                        print(f"  Warning: Unable to get Twitter Agent {agent_id}: {e}")
+                
+                if twitter_actions:
+                    await self.twitter_env.step(twitter_actions)
+                    
+                    for interview in twitter_interviews:
+                        agent_id = interview.get("agent_id")
+                        result = self._get_interview_result(agent_id, "twitter")
+                        result["platform"] = "twitter"
+                        results[f"twitter_{agent_id}"] = result
+            except Exception as e:
+                print(f"  Twitter batch Interview failed: {e}")
+        
+        # Process Reddit platform interviews
+        if reddit_interviews and self.reddit_env:
+            try:
+                reddit_actions = {}
+                for interview in reddit_interviews:
+                    agent_id = interview.get("agent_id")
+                    prompt = interview.get("prompt", "")
+                    try:
+                        agent = self.reddit_agent_graph.get_agent(agent_id)
+                        reddit_actions[agent] = ManualAction(
+                            action_type=ActionType.INTERVIEW,
+                            action_args={"prompt": prompt}
+                        )
+                    except Exception as e:
+                        print(f"  Warning: Unable to get Reddit Agent {agent_id}: {e}")
+                
+                if reddit_actions:
+                    await self.reddit_env.step(reddit_actions)
+                    
+                    for interview in reddit_interviews:
+                        agent_id = interview.get("agent_id")
+                        result = self._get_interview_result(agent_id, "reddit")
+                        result["platform"] = "reddit"
+                        results[f"reddit_{agent_id}"] = result
+            except Exception as e:
+                print(f"  Reddit batch Interview failed: {e}")
+        
+        if results:
+            self.send_response(command_id, "completed", result={
+                "interviews_count": len(results),
+                "results": results
+            })
+            print(f"  Batch Interview completed: {len(results)} Agents")
+            return True
+        else:
+            self.send_response(command_id, "failed", error="No successful interviews")
+            return False
+    
+    def _get_interview_result(self, agent_id: int, platform: str) -> Dict[str, Any]:
+        """Get the latest Interview result from the database"""
+        db_path = os.path.join(self.simulation_dir, f"{platform}_simulation.db")
+        
+        result = {
+            "agent_id": agent_id,
+            "response": None,
+            "timestamp": None
+        }
+        
+        if not os.path.exists(db_path):
+            return result
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Query the latest Interview record
+            cursor.execute("""
+                SELECT user_id, info, created_at
+                FROM trace
+                WHERE action = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (ActionType.INTERVIEW.value, agent_id))
+
+            row = cursor.fetchone()
+            if row:
+                user_id, info_json, created_at = row
+                try:
+                    info = json.loads(info_json) if info_json else {}
+                    result["response"] = info.get("response", info)
+                    result["timestamp"] = created_at
+                except json.JSONDecodeError:
+                    result["response"] = info_json
+
+            conn.close()
+
+        except Exception as e:
+            print(f"  Failed to read Interview result: {e}")
+        
+        return result
+    
+    async def process_commands(self) -> bool:
+        """
+        Process all pending commands
+
+        Returns:
+            True means continue running, False means should exit
+        """
+        command = self.poll_command()
+        if not command:
+            return True
+        
+        command_id = command.get("command_id")
+        command_type = command.get("command_type")
+        args = command.get("args", {})
+        
+        print(f"\nReceived IPC command: {command_type}, id={command_id}")
+
+        if command_type == CommandType.INTERVIEW:
+            await self.handle_interview(
+                command_id,
+                args.get("agent_id", 0),
+                args.get("prompt", ""),
+                args.get("platform")
+            )
+            return True
+            
+        elif command_type == CommandType.BATCH_INTERVIEW:
+            await self.handle_batch_interview(
+                command_id,
+                args.get("interviews", []),
+                args.get("platform")
+            )
+            return True
+            
+        elif command_type == CommandType.CLOSE_ENV:
+            print("Received close environment command")
+            self.send_response(command_id, "completed", result={"message": "Environment is shutting down"})
+            return False
+        
+        else:
+            self.send_response(command_id, "failed", error=f"Unknown command type: {command_type}")
+            return True
+
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    """Load configuration file"""
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+# Non-core action types to filter out (these actions have low analytical value)
+FILTERED_ACTIONS = {'refresh', 'sign_up'}
+
+# Action type mapping (database name -> standard name)
+ACTION_TYPE_MAP = {
+    'create_post': 'CREATE_POST',
+    'like_post': 'LIKE_POST',
+    'dislike_post': 'DISLIKE_POST',
+    'repost': 'REPOST',
+    'quote_post': 'QUOTE_POST',
+    'follow': 'FOLLOW',
+    'mute': 'MUTE',
+    'create_comment': 'CREATE_COMMENT',
+    'like_comment': 'LIKE_COMMENT',
+    'dislike_comment': 'DISLIKE_COMMENT',
+    'search_posts': 'SEARCH_POSTS',
+    'search_user': 'SEARCH_USER',
+    'trend': 'TREND',
+    'do_nothing': 'DO_NOTHING',
+    'interview': 'INTERVIEW',
+}
+
+
+def get_agent_names_from_config(config: Dict[str, Any]) -> Dict[int, str]:
+    """
+    Get the agent_id -> entity_name mapping from simulation_config
+
+    This allows displaying real entity names in actions.jsonl instead of codes like "Agent_0"
+
+    Args:
+        config: Contents of simulation_config.json
+
+    Returns:
+        Mapping dictionary of agent_id -> entity_name
+    """
+    agent_names = {}
+    agent_configs = config.get("agent_configs", [])
+    
+    for agent_config in agent_configs:
+        agent_id = agent_config.get("agent_id")
+        entity_name = agent_config.get("entity_name", f"Agent_{agent_id}")
+        if agent_id is not None:
+            agent_names[agent_id] = entity_name
+    
+    return agent_names
+
+
+def fetch_new_actions_from_db(
+    db_path: str,
+    last_rowid: int,
+    agent_names: Dict[int, str]
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Fetch new action records from the database with full context information
+
+    Args:
+        db_path: Database file path
+        last_rowid: Maximum rowid value from last read (using rowid instead of created_at because different platforms use different created_at formats)
+        agent_names: agent_id -> agent_name mapping
+
+    Returns:
+        (actions_list, new_last_rowid)
+        - actions_list: List of actions, each containing agent_id, agent_name, action_type, action_args (with context info)
+        - new_last_rowid: New maximum rowid value
+    """
+    actions = []
+    new_last_rowid = last_rowid
+    
+    if not os.path.exists(db_path):
+        return actions, new_last_rowid
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Use rowid to track processed records (rowid is SQLite's built-in auto-increment field)
+        # This avoids created_at format differences (Twitter uses integers, Reddit uses datetime strings)
+        cursor.execute("""
+            SELECT rowid, user_id, action, info
+            FROM trace
+            WHERE rowid > ?
+            ORDER BY rowid ASC
+        """, (last_rowid,))
+        
+        for rowid, user_id, action, info_json in cursor.fetchall():
+            # Update maximum rowid
+            new_last_rowid = rowid
+            
+            # Filter out non-core actions
+            if action in FILTERED_ACTIONS:
+                continue
+            
+            # Parse action arguments
+            try:
+                action_args = json.loads(info_json) if info_json else {}
+            except json.JSONDecodeError:
+                action_args = {}
+            
+            # Simplify action_args, keeping only key fields (preserve full content, no truncation)
+            simplified_args = {}
+            if 'content' in action_args:
+                simplified_args['content'] = action_args['content']
+            if 'post_id' in action_args:
+                simplified_args['post_id'] = action_args['post_id']
+            if 'comment_id' in action_args:
+                simplified_args['comment_id'] = action_args['comment_id']
+            if 'quoted_id' in action_args:
+                simplified_args['quoted_id'] = action_args['quoted_id']
+            if 'new_post_id' in action_args:
+                simplified_args['new_post_id'] = action_args['new_post_id']
+            if 'follow_id' in action_args:
+                simplified_args['follow_id'] = action_args['follow_id']
+            if 'query' in action_args:
+                simplified_args['query'] = action_args['query']
+            if 'like_id' in action_args:
+                simplified_args['like_id'] = action_args['like_id']
+            if 'dislike_id' in action_args:
+                simplified_args['dislike_id'] = action_args['dislike_id']
+            
+            # Convert action type name
+            action_type = ACTION_TYPE_MAP.get(action, action.upper())
+            
+            # Enrich with context information (post content, usernames, etc.)
+            _enrich_action_context(cursor, action_type, simplified_args, agent_names)
+            
+            actions.append({
+                'agent_id': user_id,
+                'agent_name': agent_names.get(user_id, f'Agent_{user_id}'),
+                'action_type': action_type,
+                'action_args': simplified_args,
+            })
+        
+        conn.close()
+    except Exception as e:
+        print(f"Failed to read actions from database: {e}")
+    
+    return actions, new_last_rowid
+
+
+def _enrich_action_context(
+    cursor,
+    action_type: str,
+    action_args: Dict[str, Any],
+    agent_names: Dict[int, str]
+) -> None:
+    """
+    Enrich action with context information (post content, usernames, etc.)
+
+    Args:
+        cursor: Database cursor
+        action_type: Action type
+        action_args: Action arguments (will be modified in place)
+        agent_names: agent_id -> agent_name mapping
+    """
+    try:
+        # Like/dislike post: add post content and author
+        if action_type in ('LIKE_POST', 'DISLIKE_POST'):
+            post_id = action_args.get('post_id')
+            if post_id:
+                post_info = _get_post_info(cursor, post_id, agent_names)
+                if post_info:
+                    action_args['post_content'] = post_info.get('content', '')
+                    action_args['post_author_name'] = post_info.get('author_name', '')
+        
+        # Repost: add original post content and author
+        elif action_type == 'REPOST':
+            new_post_id = action_args.get('new_post_id')
+            if new_post_id:
+                # The repost's original_post_id points to the original post
+                cursor.execute("""
+                    SELECT original_post_id FROM post WHERE post_id = ?
+                """, (new_post_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    original_post_id = row[0]
+                    original_info = _get_post_info(cursor, original_post_id, agent_names)
+                    if original_info:
+                        action_args['original_content'] = original_info.get('content', '')
+                        action_args['original_author_name'] = original_info.get('author_name', '')
+        
+        # Quote post: add original post content, author, and quote comment
+        elif action_type == 'QUOTE_POST':
+            quoted_id = action_args.get('quoted_id')
+            new_post_id = action_args.get('new_post_id')
+            
+            if quoted_id:
+                original_info = _get_post_info(cursor, quoted_id, agent_names)
+                if original_info:
+                    action_args['original_content'] = original_info.get('content', '')
+                    action_args['original_author_name'] = original_info.get('author_name', '')
+            
+            # Get the quote comment content (quote_content)
+            if new_post_id:
+                cursor.execute("""
+                    SELECT quote_content FROM post WHERE post_id = ?
+                """, (new_post_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    action_args['quote_content'] = row[0]
+        
+        # Follow user: add the followed user's name
+        elif action_type == 'FOLLOW':
+            follow_id = action_args.get('follow_id')
+            if follow_id:
+                # Get followee_id from follow table
+                cursor.execute("""
+                    SELECT followee_id FROM follow WHERE follow_id = ?
+                """, (follow_id,))
+                row = cursor.fetchone()
+                if row:
+                    followee_id = row[0]
+                    target_name = _get_user_name(cursor, followee_id, agent_names)
+                    if target_name:
+                        action_args['target_user_name'] = target_name
+        
+        # Mute user: add the muted user's name
+        elif action_type == 'MUTE':
+            # Get user_id or target_id from action_args
+            target_id = action_args.get('user_id') or action_args.get('target_id')
+            if target_id:
+                target_name = _get_user_name(cursor, target_id, agent_names)
+                if target_name:
+                    action_args['target_user_name'] = target_name
+        
+        # Like/dislike comment: add comment content and author
+        elif action_type in ('LIKE_COMMENT', 'DISLIKE_COMMENT'):
+            comment_id = action_args.get('comment_id')
+            if comment_id:
+                comment_info = _get_comment_info(cursor, comment_id, agent_names)
+                if comment_info:
+                    action_args['comment_content'] = comment_info.get('content', '')
+                    action_args['comment_author_name'] = comment_info.get('author_name', '')
+        
+        # Create comment: add the commented post's information
+        elif action_type == 'CREATE_COMMENT':
+            post_id = action_args.get('post_id')
+            if post_id:
+                post_info = _get_post_info(cursor, post_id, agent_names)
+                if post_info:
+                    action_args['post_content'] = post_info.get('content', '')
+                    action_args['post_author_name'] = post_info.get('author_name', '')
+    
+    except Exception as e:
+        # Context enrichment failure does not affect the main flow
+        print(f"Failed to enrich action context: {e}")
+
+
+def _get_post_info(
+    cursor,
+    post_id: int,
+    agent_names: Dict[int, str]
+) -> Optional[Dict[str, str]]:
+    """
+    Get post information
+
+    Args:
+        cursor: Database cursor
+        post_id: Post ID
+        agent_names: agent_id -> agent_name mapping
+
+    Returns:
+        Dictionary containing content and author_name, or None
+    """
+    try:
+        cursor.execute("""
+            SELECT p.content, p.user_id, u.agent_id
+            FROM post p
+            LEFT JOIN user u ON p.user_id = u.user_id
+            WHERE p.post_id = ?
+        """, (post_id,))
+        row = cursor.fetchone()
+        if row:
+            content = row[0] or ''
+            user_id = row[1]
+            agent_id = row[2]
+            
+            # Prefer names from agent_names
+            author_name = ''
+            if agent_id is not None and agent_id in agent_names:
+                author_name = agent_names[agent_id]
+            elif user_id:
+                # Get name from user table
+                cursor.execute("SELECT name, user_name FROM user WHERE user_id = ?", (user_id,))
+                user_row = cursor.fetchone()
+                if user_row:
+                    author_name = user_row[0] or user_row[1] or ''
+
+            return {'content': content, 'author_name': author_name}
+    except Exception:
+        pass
+    return None
+
+
+def _get_user_name(
+    cursor,
+    user_id: int,
+    agent_names: Dict[int, str]
+) -> Optional[str]:
+    """
+    Get username
+
+    Args:
+        cursor: Database cursor
+        user_id: User ID
+        agent_names: agent_id -> agent_name mapping
+
+    Returns:
+        Username, or None
+    """
+    try:
+        cursor.execute("""
+            SELECT agent_id, name, user_name FROM user WHERE user_id = ?
+        """, (user_id,))
+        row = cursor.fetchone()
+        if row:
+            agent_id = row[0]
+            name = row[1]
+            user_name = row[2]
+            
+            # Prefer names from agent_names
+            if agent_id is not None and agent_id in agent_names:
+                return agent_names[agent_id]
+            return name or user_name or ''
+    except Exception:
+        pass
+    return None
+
+
+def _get_comment_info(
+    cursor,
+    comment_id: int,
+    agent_names: Dict[int, str]
+) -> Optional[Dict[str, str]]:
+    """
+    Get comment information
+
+    Args:
+        cursor: Database cursor
+        comment_id: Comment ID
+        agent_names: agent_id -> agent_name mapping
+
+    Returns:
+        Dictionary containing content and author_name, or None
+    """
+    try:
+        cursor.execute("""
+            SELECT c.content, c.user_id, u.agent_id
+            FROM comment c
+            LEFT JOIN user u ON c.user_id = u.user_id
+            WHERE c.comment_id = ?
+        """, (comment_id,))
+        row = cursor.fetchone()
+        if row:
+            content = row[0] or ''
+            user_id = row[1]
+            agent_id = row[2]
+            
+            # Prefer names from agent_names
+            author_name = ''
+            if agent_id is not None and agent_id in agent_names:
+                author_name = agent_names[agent_id]
+            elif user_id:
+                # Get name from user table
+                cursor.execute("SELECT name, user_name FROM user WHERE user_id = ?", (user_id,))
+                user_row = cursor.fetchone()
+                if user_row:
+                    author_name = user_row[0] or user_row[1] or ''
+
+            return {'content': content, 'author_name': author_name}
+    except Exception:
+        pass
+    return None
+
+
+def create_model(config: Dict[str, Any], use_boost: bool = False):
+    """
+    Create LLM model
+
+    Supports dual LLM configuration for faster parallel simulation:
+    - General config: LLM_API_KEY, LLM_BASE_URL, LLM_MODEL_NAME
+    - Boost config (optional): LLM_BOOST_API_KEY, LLM_BOOST_BASE_URL, LLM_BOOST_MODEL_NAME
+
+    If a boost LLM is configured, parallel simulations can use different API providers for different platforms, improving concurrency.
+
+    Args:
+        config: Simulation configuration dictionary
+        use_boost: Whether to use the boost LLM configuration (if available)
+    """
+    # Check if boost configuration exists
+    boost_api_key = os.environ.get("LLM_BOOST_API_KEY", "")
+    boost_base_url = os.environ.get("LLM_BOOST_BASE_URL", "")
+    boost_model = os.environ.get("LLM_BOOST_MODEL_NAME", "")
+    has_boost_config = bool(boost_api_key)
+    
+    # Select which LLM to use based on parameters and configuration
+    if use_boost and has_boost_config:
+        # Use boost configuration
+        llm_api_key = boost_api_key
+        llm_base_url = boost_base_url
+        llm_model = boost_model or os.environ.get("LLM_MODEL_NAME", "")
+        config_label = "[Boost LLM]"
+    else:
+        # Use general configuration. WONDERWALL_* overrides LLM_* per-slot,
+        # so the simulation loop can target a different OpenAI-compatible
+        # endpoint (e.g. a self-hosted vLLM / Modal deployment) without
+        # touching the Default/Smart/NER slots.
+        llm_api_key = os.environ.get("WONDERWALL_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
+        llm_base_url = os.environ.get("WONDERWALL_BASE_URL", "") or os.environ.get("LLM_BASE_URL", "")
+        llm_model = os.environ.get("WONDERWALL_MODEL_NAME", "") or os.environ.get("LLM_MODEL_NAME", "")
+        config_label = "[General LLM]"
+    
+    # If no model name in .env, use config as fallback
+    if not llm_model:
+        llm_model = config.get("llm_model", "")
+    if not llm_model:
+        raise ValueError(
+            "No LLM model configured. Set WONDERWALL_MODEL_NAME or LLM_MODEL_NAME in .env, "
+            "or pass llm_model in the simulation config."
+        )
+    
+    # Set environment variables required by camel-ai
+    if llm_api_key:
+        os.environ["OPENAI_API_KEY"] = llm_api_key
+    
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("Missing API Key configuration, please set LLM_API_KEY in the project root .env file")
+    
+    if llm_base_url:
+        os.environ["OPENAI_API_BASE_URL"] = llm_base_url
+    
+    print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else 'default'}...")
+    
+    return ModelFactory.create(
+        model_platform=ModelPlatformType.OPENAI,
+        model_type=llm_model,
+        default_headers={
+            'HTTP-Referer': 'https://github.com/aaronjmars/MiroShark',
+            'X-OpenRouter-Title': 'MiroShark - Universal Swarm Intelligence Engine',
+            'X-OpenRouter-Categories': 'roleplay,personal-agent',
+            'User-Agent': f'MiroShark/1.0 (Wonderwall-Simulation; model={llm_model})',
+        },
+    )
+
+
+def _build_social_summary_for_traders(round_memory, current_round: int, bridge) -> str:
+    """Build a concise social media summary for Polymarket traders' observation prompt.
+
+    Extracts the most relevant posts/comments from the previous round
+    so traders see actual social media content, not just sentiment numbers.
+    """
+    parts = []
+
+    # Get previous round's actions from round memory
+    prev_round = current_round - 1
+    if prev_round >= 0 and prev_round in round_memory._rounds:
+        rec = round_memory._rounds[prev_round]
+        for platform in ("twitter", "reddit"):
+            actions = rec.platform_actions.get(platform, [])
+            # Filter to content-producing actions
+            content_actions = [
+                a for a in actions
+                if a.get("action_type") in ("CREATE_POST", "CREATE_COMMENT", "QUOTE_POST")
+                and a.get("action_args", {}).get("content")
+            ]
+            if content_actions:
+                parts.append(f"[{platform.title()} — last round]")
+                for a in content_actions[:4]:  # top 4 posts per platform
+                    agent = a.get("agent_name", "?")
+                    content = a["action_args"]["content"][:150]
+                    parts.append(f'  {agent}: "{content}"')
+
+    # Add bridge sentiment if available
+    if bridge and bridge.latest_sentiment and bridge.latest_sentiment.topic_sentiments:
+        for topic, data in bridge.latest_sentiment.topic_sentiments.items():
+            pos = data.get("positive_pct", 0)
+            neg = data.get("negative_pct", 0)
+            count = data.get("post_count", 0)
+            if count > 0:
+                mood = "bullish" if pos > neg + 10 else "bearish" if neg > pos + 10 else "mixed"
+                parts.append(f"  Sentiment on \"{topic}\": {mood} ({pos:.0f}% pos, {neg:.0f}% neg, {count} posts)")
+
+    if not parts:
+        return ""
+
+    return "\n".join(parts)
+
+
+def _mcp_inject_and_dispatch_pre_round(active_agents, bridge, server_names, tool_agent_ids, pending_results):
+    """Inject MCP tool catalogue + prior results into tool-enabled agents.
+
+    Called once per platform per round. No-ops when bridge is None.
+    """
+    if bridge is None or not tool_agent_ids:
+        return
+    try:
+        catalogue = bridge.tool_catalogue(server_names)
+    except Exception as exc:
+        catalogue = f"(MCP catalogue unavailable: {exc})"
+    for agent_id, agent in active_agents:
+        if agent_id not in tool_agent_ids:
+            continue
+        try:
+            inject_mcp_catalogue(agent, catalogue)
+        except Exception:
+            pass
+        prior = pending_results.pop(agent_id, None)
+        if prior:
+            try:
+                inject_mcp_results(agent, prior)
+            except Exception:
+                pass
+
+
+def _mcp_dispatch_from_actions(actions, bridge, tool_agent_ids, pending_results):
+    """After a round, parse CREATE_POST content for <mcp_call> tags.
+
+    Dispatched results are queued in ``pending_results[agent_id]`` for
+    injection on the agent's next activation.
+    """
+    if bridge is None or not actions:
+        return
+    for a in actions:
+        if a.get("action_type") not in ("CREATE_POST", "CREATE_COMMENT", "QUOTE_POST"):
+            continue
+        aid = a.get("agent_id")
+        if aid is None or int(aid) not in tool_agent_ids:
+            continue
+        content = (a.get("action_args") or {}).get("content") or ""
+        if "<mcp_call" not in content:
+            continue
+        try:
+            calls = _mcp_parse_tool_calls(content)
+        except Exception:
+            calls = []
+        if not calls:
+            continue
+        try:
+            results = bridge.dispatch_calls(calls)
+        except Exception:
+            results = []
+        if results:
+            pending_results.setdefault(int(aid), []).extend(results)
+
+
+def get_active_agents_for_round(
+    env,
+    config: Dict[str, Any],
+    current_hour: int,
+    round_num: int
+) -> List:
+    """Determine which Agents to activate this round based on time and configuration"""
+    time_config = config.get("time_config", {})
+    agent_configs = config.get("agent_configs", [])
+    
+    base_min = time_config.get("agents_per_hour_min", 5)
+    base_max = time_config.get("agents_per_hour_max", 20)
+
+    target_count = int(random.uniform(base_min, base_max))
+
+    candidates = []
+    for cfg in agent_configs:
+        agent_id = cfg.get("agent_id", 0)
+        activity_level = cfg.get("activity_level", 0.5)
+
+        if random.random() < activity_level:
+            candidates.append(agent_id)
+    
+    selected_ids = random.sample(
+        candidates, 
+        min(target_count, len(candidates))
+    ) if candidates else []
+    
+    active_agents = []
+    for agent_id in selected_ids:
+        try:
+            agent = env.agent_graph.get_agent(agent_id)
+            active_agents.append((agent_id, agent))
+        except Exception:
+            pass
+    
+    return active_agents
+
+
+class PlatformSimulation:
+    """Platform simulation result container"""
+    def __init__(self):
+        self.env = None
+        self.agent_graph = None
+        self.total_actions = 0
+
+
+async def run_twitter_simulation(
+    config: Dict[str, Any],
+    simulation_dir: str,
+    action_logger: Optional[PlatformActionLogger] = None,
+    main_logger: Optional[SimulationLogManager] = None,
+    max_rounds: Optional[int] = None,
+    start_round: int = 0,
+    cross_platform_log: Optional[CrossPlatformLog] = None,
+    market_media_bridge: Optional[MarketMediaBridge] = None,
+) -> PlatformSimulation:
+    """Run Twitter simulation
+
+    Args:
+        config: Simulation configuration
+        simulation_dir: Simulation directory
+        action_logger: Action logger
+        main_logger: Main log manager
+        max_rounds: Maximum simulation rounds (optional, used to truncate long simulations)
+        cross_platform_log: Shared log for cross-platform agent awareness
+
+    Returns:
+        PlatformSimulation: Result object containing env and agent_graph
+    """
+    result = PlatformSimulation()
+    
+    def log_info(msg):
+        if main_logger:
+            main_logger.info(f"[Twitter] {msg}")
+        print(f"[Twitter] {msg}")
+    
+    log_info("Initializing...")
+
+    # Twitter uses the general LLM configuration
+    model = create_model(config, use_boost=False)
+    
+    # Wonderwall Twitter uses CSV format
+    profile_path = os.path.join(simulation_dir, "twitter_profiles.csv")
+    if not os.path.exists(profile_path):
+        log_info(f"Error: Profile file not found: {profile_path}")
+        return result
+    
+    result.agent_graph = await generate_twitter_agent_graph(
+        profile_path=profile_path,
+        model=model,
+        available_actions=TWITTER_ACTIONS,
+    )
+    
+    # Get real Agent name mapping from config (using entity_name instead of default Agent_X)
+    agent_names = get_agent_names_from_config(config)
+    # If an agent is not in the config, use Wonderwall default name
+    for agent_id, agent in result.agent_graph.get_agents():
+        if agent_id not in agent_names:
+            agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
+
+    is_resume = start_round > 0
+
+    db_path = os.path.join(simulation_dir, "twitter_simulation.db")
+    if not is_resume and os.path.exists(db_path):
+        os.remove(db_path)
+
+    result.env = wonderwall.make(
+        agent_graph=result.agent_graph,
+        platform=wonderwall.DefaultPlatformType.TWITTER,
+        database_path=db_path,
+        semaphore=60,  # Concurrent LLM requests per platform (increase for faster APIs)
+    )
+
+    await result.env.reset()
+    log_info("Environment started" + (f" (resuming from round {start_round})" if is_resume else ""))
+
+    # Universal agent guidelines (e.g. "no hashtags") — inject once; system
+    # messages persist for the life of each agent.
+    _n_rules = inject_posting_rules_into_graph(result.agent_graph)
+    if _n_rules:
+        log_info(f"Posting rules injected into {_n_rules} agents")
+
+    if action_logger:
+        action_logger.log_simulation_start(config)
+
+    total_actions = 0
+    last_rowid = 0  # Track last processed row in database (using rowid to avoid created_at format differences)
+
+    # Execute initial events (skip if resuming)
+    if not is_resume:
+        event_config = config.get("event_config", {})
+        initial_posts = event_config.get("initial_posts", [])
+
+        # Log round 0 start (initial events phase)
+        if action_logger:
+            action_logger.log_round_start(0, 0)  # round 0, simulated_hour 0
+
+        initial_action_count = 0
+        if initial_posts:
+            initial_actions = {}
+            for post in initial_posts:
+                agent_id = post.get("poster_agent_id", 0)
+                content = post.get("content", "")
+                try:
+                    agent = result.env.agent_graph.get_agent(agent_id)
+                    initial_actions[agent] = ManualAction(
+                        action_type=ActionType.CREATE_POST,
+                        action_args={"content": content}
+                    )
+
+                    if action_logger:
+                        action_logger.log_action(
+                            round_num=0,
+                            agent_id=agent_id,
+                            agent_name=agent_names.get(agent_id, f"Agent_{agent_id}"),
+                            action_type="CREATE_POST",
+                            action_args={"content": content}
+                        )
+                        total_actions += 1
+                        initial_action_count += 1
+                except Exception:
+                    pass
+
+            if initial_actions:
+                await result.env.step(initial_actions)
+                log_info(f"Published {len(initial_actions)} initial posts")
+
+        # Log round 0 end
+        if action_logger:
+            action_logger.log_round_end(0, initial_action_count)
+
+    # Main simulation loop
+    time_config = config.get("time_config", {})
+    total_hours = time_config.get("total_simulation_hours", 72)
+    minutes_per_round = time_config.get("minutes_per_round", 30)
+    total_rounds = (total_hours * 60) // minutes_per_round
+    
+    # If max rounds specified, truncate
+    if max_rounds is not None and max_rounds > 0:
+        original_rounds = total_rounds
+        total_rounds = min(total_rounds, max_rounds)
+        if total_rounds < original_rounds:
+            log_info(f"Rounds truncated: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
+    
+    # Initialize belief tracking for Twitter
+    belief_tracker = BeliefTracker(config, simulation_dir, "twitter")
+    log_info(f"Belief tracking: {len(belief_tracker.topics)} topics")
+
+    start_time = datetime.now()
+
+    # Counterfactual branch spec (fires once at trigger_round when present)
+    cf_spec = load_counterfactual(simulation_dir)
+    if cf_spec:
+        log_info(
+            f"Counterfactual branch active: will fire at round "
+            f"{cf_spec.get('trigger_round')} — {cf_spec.get('label', 'unlabeled')}"
+        )
+
+    if start_round > 0:
+        log_info(f"Resuming from round {start_round} (skipping rounds 0-{start_round - 1})")
+
+    for round_num in range(start_round, total_rounds):
+        # Check if shutdown signal received
+        if _shutdown_event and _shutdown_event.is_set():
+            if main_logger:
+                main_logger.info(f"Received shutdown signal, stopping simulation at round {round_num + 1}")
+            break
+
+        # Surface the current round to every LLM call inside the subprocess
+        # via an env var — the only context channel that reaches CAMEL's
+        # OpenRouter call site cleanly without reworking its signature.
+        # `SocialAgent._aget_model_response` reads this and forwards it to
+        # Langfuse as `metadata.round`.
+        os.environ['MIROSHARK_ROUND_NUM'] = str(round_num + 1)
+
+        simulated_minutes = round_num * minutes_per_round
+        simulated_hour = (simulated_minutes // 60) % 24
+        simulated_day = simulated_minutes // (60 * 24) + 1
+
+        active_agents = get_active_agents_for_round(
+            result.env, config, simulated_hour, round_num
+        )
+
+        # Log round start regardless of whether there are active agents
+        if action_logger:
+            action_logger.log_round_start(round_num + 1, simulated_hour)
+
+        _sim_id = config.get('simulation_id')
+        write_simulation_event(simulation_dir, 'round_boundary', {
+            'boundary': 'start', 'simulated_hour': simulated_hour,
+            'simulated_day': simulated_day, 'active_agents': len(active_agents),
+        }, simulation_id=_sim_id, round_num=round_num + 1, platform='twitter')
+
+        if not active_agents:
+            # Also log round end when no active agents (actions_count=0)
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            write_simulation_event(simulation_dir, 'round_boundary', {
+                'boundary': 'end', 'actions_count': 0, 'elapsed_ms': 0,
+            }, simulation_id=_sim_id, round_num=round_num + 1, platform='twitter')
+            continue
+
+        # Inject beliefs BEFORE the round so agents act on current stance
+        if belief_tracker and round_num > 0:
+            for agent_id, agent in active_agents:
+                bs = belief_tracker.belief_states.get(agent_id)
+                if bs:
+                    inject_belief_context(agent, bs.to_prompt_text())
+
+        # Inject cross-platform digest into active agents' system messages
+        if cross_platform_log:
+            for agent_id, agent in active_agents:
+                digest = cross_platform_log.build_digest(
+                    agent_id, exclude_platform="twitter"
+                )
+                if digest:
+                    inject_cross_platform_context(agent, digest)
+
+        # Inject prediction market prices so social media agents can discuss them
+        if market_media_bridge:
+            market_prompt = market_media_bridge.get_market_prompt()
+            if market_prompt:
+                for _, agent in active_agents:
+                    inject_market_context(agent, market_prompt)
+
+        # Director Mode: inject breaking events into agent context
+        director_events = consume_pending_events(simulation_dir, round_num + 1)
+        event_texts = [e["event_text"] for e in director_events] if director_events else []
+        # Counterfactual: fire exactly once, at the trigger round
+        if cf_spec and round_num == int(cf_spec.get("trigger_round", -1)):
+            label = cf_spec.get("label") or "counterfactual event"
+            event_texts.append(
+                f"[COUNTERFACTUAL] {label}: {cf_spec['injection_text'].strip()}"
+            )
+            log_info(f"Counterfactual fired at round {round_num + 1}: {label}")
+        if event_texts:
+            combined_text = " | ".join(event_texts)
+            for _, agent in active_agents:
+                inject_director_event_context(agent, combined_text)
+            if director_events:
+                log_info(f"Director Mode: injected {len(director_events)} event(s) at round {round_num + 1}")
+
+        _round_t0 = datetime.now()
+        actions = {agent: LLMAction() for _, agent in active_agents}
+        if not await _safe_env_step(result.env, actions, round_num, log_info):
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            write_simulation_event(simulation_dir, 'round_boundary', {
+                'boundary': 'end', 'actions_count': 0,
+                'elapsed_ms': int((datetime.now() - _round_t0).total_seconds() * 1000),
+                'error': 'step_failed',
+            }, simulation_id=_sim_id, round_num=round_num + 1, platform='twitter')
+            continue
+
+        # Fetch actually executed actions from database and log them
+        try:
+            actual_actions, last_rowid = fetch_new_actions_from_db(
+                db_path, last_rowid, agent_names
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} fetch_actions failed: {exc!r}")
+            actual_actions = []
+
+        # Update beliefs and inject context for next round
+        try:
+            belief_tracker.after_round(db_path, result.env, active_agents, round_num, actual_actions)
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} belief update failed: {exc!r}")
+
+        # Publish sentiment to bridge for Polymarket agents to see
+        if market_media_bridge:
+            market_media_bridge.update_sentiment(
+                belief_tracker.belief_states, actual_actions, round_num, "twitter"
+            )
+
+        # Record actions to cross-platform log for other platforms to see
+        if cross_platform_log and actual_actions:
+            cross_platform_log.record("twitter", actual_actions)
+
+        round_action_count = 0
+        for action_data in actual_actions:
+            if action_logger:
+                action_logger.log_action(
+                    round_num=round_num + 1,
+                    agent_id=action_data['agent_id'],
+                    agent_name=action_data['agent_name'],
+                    action_type=action_data['action_type'],
+                    action_args=action_data['action_args']
+                )
+                total_actions += 1
+                round_action_count += 1
+
+        if action_logger:
+            action_logger.log_round_end(round_num + 1, round_action_count)
+
+        _round_elapsed = int((datetime.now() - _round_t0).total_seconds() * 1000)
+        write_simulation_event(simulation_dir, 'round_boundary', {
+            'boundary': 'end', 'actions_count': round_action_count,
+            'elapsed_ms': _round_elapsed,
+        }, simulation_id=_sim_id, round_num=round_num + 1, platform='twitter')
+
+        if (round_num + 1) % 20 == 0:
+            progress = (round_num + 1) / total_rounds * 100
+            log_info(f"Day {simulated_day}, {simulated_hour:02d}:00 - Round {round_num + 1}/{total_rounds} ({progress:.1f}%)")
+
+    # Note: Do not close the environment, keep it for Interview use
+
+    if action_logger:
+        action_logger.log_simulation_end(total_rounds, total_actions)
+
+    result.total_actions = total_actions
+    elapsed = (datetime.now() - start_time).total_seconds()
+    log_info(f"Simulation loop completed! Elapsed: {elapsed:.1f}s, total actions: {total_actions}")
+
+    # Save belief trajectory
+    traj_path = belief_tracker.save_trajectory()
+    log_info(f"Belief trajectory saved: {traj_path}")
+    log_info(belief_tracker.get_summary())
+
+    return result
+
+
+async def run_reddit_simulation(
+    config: Dict[str, Any],
+    simulation_dir: str,
+    action_logger: Optional[PlatformActionLogger] = None,
+    main_logger: Optional[SimulationLogManager] = None,
+    max_rounds: Optional[int] = None,
+    start_round: int = 0,
+    cross_platform_log: Optional[CrossPlatformLog] = None,
+    market_media_bridge: Optional[MarketMediaBridge] = None,
+) -> PlatformSimulation:
+    """Run Reddit simulation
+
+    Args:
+        config: Simulation configuration
+        simulation_dir: Simulation directory
+        action_logger: Action logger
+        main_logger: Main log manager
+        max_rounds: Maximum simulation rounds (optional, used to truncate long simulations)
+        cross_platform_log: Shared log for cross-platform agent awareness
+
+    Returns:
+        PlatformSimulation: Result object containing env and agent_graph
+    """
+    result = PlatformSimulation()
+    
+    def log_info(msg):
+        if main_logger:
+            main_logger.info(f"[Reddit] {msg}")
+        print(f"[Reddit] {msg}")
+    
+    log_info("Initializing...")
+
+    # Reddit uses the boost LLM configuration (if available, otherwise falls back to general config)
+    model = create_model(config, use_boost=True)
+    
+    profile_path = os.path.join(simulation_dir, "reddit_profiles.json")
+    if not os.path.exists(profile_path):
+        log_info(f"Error: Profile file not found: {profile_path}")
+        return result
+
+    result.agent_graph = await generate_reddit_agent_graph(
+        profile_path=profile_path,
+        model=model,
+        available_actions=REDDIT_ACTIONS,
+    )
+    
+    # Get real Agent name mapping from config (using entity_name instead of default Agent_X)
+    agent_names = get_agent_names_from_config(config)
+    # If an agent is not in the config, use Wonderwall default name
+    for agent_id, agent in result.agent_graph.get_agents():
+        if agent_id not in agent_names:
+            agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
+
+    is_resume = start_round > 0
+
+    db_path = os.path.join(simulation_dir, "reddit_simulation.db")
+    if not is_resume and os.path.exists(db_path):
+        os.remove(db_path)
+
+    result.env = wonderwall.make(
+        agent_graph=result.agent_graph,
+        platform=wonderwall.DefaultPlatformType.REDDIT,
+        database_path=db_path,
+        semaphore=60,  # Concurrent LLM requests per platform (increase for faster APIs)
+    )
+
+    await result.env.reset()
+    log_info("Environment started" + (f" (resuming from round {start_round})" if is_resume else ""))
+
+    # Universal agent guidelines (e.g. "no hashtags") — inject once; system
+    # messages persist for the life of each agent.
+    _n_rules = inject_posting_rules_into_graph(result.agent_graph)
+    if _n_rules:
+        log_info(f"Posting rules injected into {_n_rules} agents")
+
+    if action_logger:
+        action_logger.log_simulation_start(config)
+
+    total_actions = 0
+    last_rowid = 0  # Track last processed row in database (using rowid to avoid created_at format differences)
+
+    # Execute initial events (skip if resuming)
+    if not is_resume:
+        event_config = config.get("event_config", {})
+        initial_posts = event_config.get("initial_posts", [])
+
+        # Log round 0 start (initial events phase)
+        if action_logger:
+            action_logger.log_round_start(0, 0)  # round 0, simulated_hour 0
+
+        initial_action_count = 0
+        if initial_posts:
+            initial_actions = {}
+            for post in initial_posts:
+                agent_id = post.get("poster_agent_id", 0)
+                content = post.get("content", "")
+                try:
+                    agent = result.env.agent_graph.get_agent(agent_id)
+                    if agent in initial_actions:
+                        if not isinstance(initial_actions[agent], list):
+                            initial_actions[agent] = [initial_actions[agent]]
+                        initial_actions[agent].append(ManualAction(
+                            action_type=ActionType.CREATE_POST,
+                            action_args={"content": content}
+                        ))
+                    else:
+                        initial_actions[agent] = ManualAction(
+                            action_type=ActionType.CREATE_POST,
+                            action_args={"content": content}
+                        )
+
+                    if action_logger:
+                        action_logger.log_action(
+                            round_num=0,
+                            agent_id=agent_id,
+                            agent_name=agent_names.get(agent_id, f"Agent_{agent_id}"),
+                            action_type="CREATE_POST",
+                            action_args={"content": content}
+                        )
+                        total_actions += 1
+                        initial_action_count += 1
+                except Exception:
+                    pass
+
+            if initial_actions:
+                await result.env.step(initial_actions)
+                log_info(f"Published {len(initial_actions)} initial posts")
+
+        # Log round 0 end
+        if action_logger:
+            action_logger.log_round_end(0, initial_action_count)
+    
+    # Main simulation loop
+    time_config = config.get("time_config", {})
+    total_hours = time_config.get("total_simulation_hours", 72)
+    minutes_per_round = time_config.get("minutes_per_round", 30)
+    total_rounds = (total_hours * 60) // minutes_per_round
+    
+    # If max rounds specified, truncate
+    if max_rounds is not None and max_rounds > 0:
+        original_rounds = total_rounds
+        total_rounds = min(total_rounds, max_rounds)
+        if total_rounds < original_rounds:
+            log_info(f"Rounds truncated: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
+    
+    # Initialize belief tracking for Reddit
+    belief_tracker = BeliefTracker(config, simulation_dir, "reddit")
+    log_info(f"Belief tracking: {len(belief_tracker.topics)} topics")
+
+    start_time = datetime.now()
+
+    # Counterfactual branch spec (fires once at trigger_round when present)
+    cf_spec = load_counterfactual(simulation_dir)
+    if cf_spec:
+        log_info(
+            f"Counterfactual branch active: will fire at round "
+            f"{cf_spec.get('trigger_round')} — {cf_spec.get('label', 'unlabeled')}"
+        )
+
+    if start_round > 0:
+        log_info(f"Resuming from round {start_round} (skipping rounds 0-{start_round - 1})")
+
+    for round_num in range(start_round, total_rounds):
+        # Check if shutdown signal received
+        if _shutdown_event and _shutdown_event.is_set():
+            if main_logger:
+                main_logger.info(f"Received shutdown signal, stopping simulation at round {round_num + 1}")
+            break
+
+        # Surface the current round to every LLM call inside the subprocess
+        # via an env var — the only context channel that reaches CAMEL's
+        # OpenRouter call site cleanly without reworking its signature.
+        # `SocialAgent._aget_model_response` reads this and forwards it to
+        # Langfuse as `metadata.round`.
+        os.environ['MIROSHARK_ROUND_NUM'] = str(round_num + 1)
+
+        simulated_minutes = round_num * minutes_per_round
+        simulated_hour = (simulated_minutes // 60) % 24
+        simulated_day = simulated_minutes // (60 * 24) + 1
+
+        active_agents = get_active_agents_for_round(
+            result.env, config, simulated_hour, round_num
+        )
+
+        # Log round start regardless of whether there are active agents
+        if action_logger:
+            action_logger.log_round_start(round_num + 1, simulated_hour)
+
+        if not active_agents:
+            # Also log round end when no active agents (actions_count=0)
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            continue
+
+        # Inject beliefs BEFORE the round so agents act on current stance
+        if belief_tracker and round_num > 0:
+            for agent_id, agent in active_agents:
+                bs = belief_tracker.belief_states.get(agent_id)
+                if bs:
+                    inject_belief_context(agent, bs.to_prompt_text())
+
+        # Inject cross-platform digest into active agents' system messages
+        if cross_platform_log:
+            for agent_id, agent in active_agents:
+                digest = cross_platform_log.build_digest(
+                    agent_id, exclude_platform="reddit"
+                )
+                if digest:
+                    inject_cross_platform_context(agent, digest)
+
+        # Inject prediction market prices so social media agents can discuss them
+        if market_media_bridge:
+            market_prompt = market_media_bridge.get_market_prompt()
+            if market_prompt:
+                for _, agent in active_agents:
+                    inject_market_context(agent, market_prompt)
+
+        # Director Mode: inject breaking events into agent context
+        director_events = consume_pending_events(simulation_dir, round_num + 1)
+        event_texts = [e["event_text"] for e in director_events] if director_events else []
+        # Counterfactual: fire exactly once, at the trigger round
+        if cf_spec and round_num == int(cf_spec.get("trigger_round", -1)):
+            label = cf_spec.get("label") or "counterfactual event"
+            event_texts.append(
+                f"[COUNTERFACTUAL] {label}: {cf_spec['injection_text'].strip()}"
+            )
+            log_info(f"Counterfactual fired at round {round_num + 1}: {label}")
+        if event_texts:
+            combined_text = " | ".join(event_texts)
+            for _, agent in active_agents:
+                inject_director_event_context(agent, combined_text)
+            if director_events:
+                log_info(f"Director Mode: injected {len(director_events)} event(s) at round {round_num + 1}")
+
+        actions = {agent: LLMAction() for _, agent in active_agents}
+        if not await _safe_env_step(result.env, actions, round_num, log_info):
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            continue
+
+        # Fetch actually executed actions from database and log them
+        try:
+            actual_actions, last_rowid = fetch_new_actions_from_db(
+                db_path, last_rowid, agent_names
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} fetch_actions failed: {exc!r}")
+            actual_actions = []
+
+        # Update beliefs based on this round's actions (will be injected next round)
+        try:
+            belief_tracker.after_round(db_path, result.env, active_agents, round_num, actual_actions)
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} belief update failed: {exc!r}")
+
+        # Publish sentiment to bridge for Polymarket agents to see
+        if market_media_bridge:
+            market_media_bridge.update_sentiment(
+                belief_tracker.belief_states, actual_actions, round_num, "reddit"
+            )
+
+        # Record actions to cross-platform log for other platforms to see
+        if cross_platform_log and actual_actions:
+            cross_platform_log.record("reddit", actual_actions)
+
+        round_action_count = 0
+        for action_data in actual_actions:
+            if action_logger:
+                action_logger.log_action(
+                    round_num=round_num + 1,
+                    agent_id=action_data['agent_id'],
+                    agent_name=action_data['agent_name'],
+                    action_type=action_data['action_type'],
+                    action_args=action_data['action_args']
+                )
+                total_actions += 1
+                round_action_count += 1
+
+        if action_logger:
+            action_logger.log_round_end(round_num + 1, round_action_count)
+
+        if (round_num + 1) % 20 == 0:
+            progress = (round_num + 1) / total_rounds * 100
+            log_info(f"Day {simulated_day}, {simulated_hour:02d}:00 - Round {round_num + 1}/{total_rounds} ({progress:.1f}%)")
+
+    # Note: Do not close the environment, keep it for Interview use
+
+    if action_logger:
+        action_logger.log_simulation_end(total_rounds, total_actions)
+
+    result.total_actions = total_actions
+    elapsed = (datetime.now() - start_time).total_seconds()
+    log_info(f"Simulation loop completed! Elapsed: {elapsed:.1f}s, total actions: {total_actions}")
+
+    # Save belief trajectory
+    traj_path = belief_tracker.save_trajectory()
+    log_info(f"Belief trajectory saved: {traj_path}")
+    log_info(belief_tracker.get_summary())
+
+    return result
+
+
+# ============================================================
+# Polymarket prediction market simulation
+# Uses Wonderwall's SimulationConfig path (not legacy ActionType)
+# ============================================================
+
+# Polymarket action type map for action log enrichment
+POLYMARKET_ACTION_TYPE_MAP = {
+    'browse_markets': 'BROWSE_MARKETS',
+    'buy_shares': 'BUY_SHARES',
+    'sell_shares': 'SELL_SHARES',
+    'view_portfolio': 'VIEW_PORTFOLIO',
+    'create_market': 'CREATE_MARKET',
+    'comment_on_market': 'COMMENT_ON_MARKET',
+    'do_nothing': 'DO_NOTHING',
+    'sign_up': 'SIGN_UP',
+}
+
+
+def _load_polymarket_profiles(profile_path: str) -> List[Dict[str, Any]]:
+    """Load Polymarket agent profiles from JSON."""
+    with open(profile_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _build_polymarket_agent_graph(
+    profiles: List[Dict[str, Any]],
+    model,
+) -> AgentGraph:
+    """
+    Build an AgentGraph for Polymarket from profile dicts.
+
+    Each profile has: user_id, name, description, risk_tolerance, user_profile.
+    Agents are created with simulation=polymarket_simulation so they use
+    PolymarketAction / PolymarketEnvironment / PolymarketPromptBuilder.
+    """
+    agent_graph = AgentGraph()
+
+    for profile in profiles:
+        agent_id = profile["user_id"]
+        # Use description as readable name if "name" looks like a username
+        display_name = profile.get("display_name") or profile.get("description", "") or profile["name"]
+        user_info = UserInfo(
+            name=display_name,
+            description=profile.get("description", ""),
+            profile={
+                "other_info": {
+                    "user_profile": profile.get("user_profile", ""),
+                    "risk_tolerance": profile.get("risk_tolerance", "moderate"),
+                }
+            },
+        )
+        agent = SocialAgent(
+            agent_id=agent_id,
+            user_info=user_info,
+            model=model,
+            agent_graph=agent_graph,
+            simulation=polymarket_simulation,
+        )
+        agent_graph.add_agent(agent)
+
+    return agent_graph
+
+
+def _fetch_polymarket_actions_from_db(
+    db_path: str,
+    last_rowid: int,
+    agent_names: Dict[int, str],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Fetch new Polymarket actions from the trace table.
+
+    Same pattern as fetch_new_actions_from_db but adapted for
+    Polymarket's action names and richer trade data.
+    """
+    actions = []
+    new_last_rowid = last_rowid
+
+    if not os.path.exists(db_path):
+        return actions, new_last_rowid
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT rowid, user_id, action, info
+            FROM trace
+            WHERE rowid > ?
+            ORDER BY rowid ASC
+        """, (last_rowid,))
+
+        for rowid, user_id, action, info_json in cursor.fetchall():
+            new_last_rowid = rowid
+
+            if action in ('sign_up',):
+                continue
+
+            try:
+                action_args = json.loads(info_json) if info_json else {}
+            except json.JSONDecodeError:
+                action_args = {}
+
+            action_type = POLYMARKET_ACTION_TYPE_MAP.get(action, action.upper())
+
+            actions.append({
+                'agent_id': user_id,
+                'agent_name': agent_names.get(user_id, f'Agent_{user_id}'),
+                'action_type': action_type,
+                'action_args': action_args,
+            })
+
+        conn.close()
+    except Exception as e:
+        print(f"Failed to read Polymarket actions from database: {e}")
+
+    return actions, new_last_rowid
+
+
+async def run_polymarket_simulation(
+    config: Dict[str, Any],
+    simulation_dir: str,
+    action_logger: Optional[PlatformActionLogger] = None,
+    main_logger: Optional[SimulationLogManager] = None,
+    max_rounds: Optional[int] = None,
+    start_round: int = 0,
+    cross_platform_log: Optional[CrossPlatformLog] = None,
+    market_media_bridge: Optional[MarketMediaBridge] = None,
+) -> PlatformSimulation:
+    """Run Polymarket prediction market simulation.
+
+    Uses Wonderwall's SimulationConfig-based path. Agents are LLM-driven
+    traders that browse markets, buy/sell shares, and create new markets.
+
+    Args:
+        config: Simulation configuration
+        simulation_dir: Simulation directory
+        action_logger: Action logger (writes to polymarket/actions.jsonl)
+        main_logger: Main log manager
+        max_rounds: Maximum simulation rounds
+        start_round: Resume from this round
+        cross_platform_log: Shared log for cross-platform agent awareness
+
+    Returns:
+        PlatformSimulation with env and agent_graph
+    """
+    result = PlatformSimulation()
+
+    def log_info(msg):
+        if main_logger:
+            main_logger.info(f"[Polymarket] {msg}")
+        print(f"[Polymarket] {msg}")
+
+    log_info("Initializing...")
+
+    model = create_model(config, use_boost=False)
+
+    profile_path = os.path.join(simulation_dir, "polymarket_profiles.json")
+    if not os.path.exists(profile_path):
+        log_info(f"Error: Profile file not found: {profile_path}")
+        return result
+
+    profiles = _load_polymarket_profiles(profile_path)
+    result.agent_graph = _build_polymarket_agent_graph(profiles, model)
+
+    # Agent name mapping
+    agent_names = get_agent_names_from_config(config)
+    for agent_id, agent in result.agent_graph.get_agents():
+        if agent_id not in agent_names:
+            agent_names[agent_id] = getattr(
+                agent, 'name', f'Agent_{agent_id}'
+            )
+
+    is_resume = start_round > 0
+
+    db_path = os.path.join(simulation_dir, "polymarket_simulation.db")
+    if not is_resume and os.path.exists(db_path):
+        os.remove(db_path)
+
+    result.env = wonderwall.make(
+        agent_graph=result.agent_graph,
+        simulation=polymarket_simulation,
+        database_path=db_path,
+        semaphore=60,
+    )
+
+    await result.env.reset()
+    log_info(
+        "Environment started"
+        + (f" (resuming from round {start_round})" if is_resume else "")
+    )
+
+    # Universal agent guidelines (e.g. "no hashtags") — inject once; system
+    # messages persist for the life of each agent.
+    _n_rules = inject_posting_rules_into_graph(result.agent_graph)
+    if _n_rules:
+        log_info(f"Posting rules injected into {_n_rules} agents")
+
+    if action_logger:
+        action_logger.log_simulation_start(config)
+
+    # Seed initial markets if configured (round 0)
+    if not is_resume:
+        event_config = config.get("event_config", {})
+        initial_markets = event_config.get("initial_markets", [])
+
+        if action_logger:
+            action_logger.log_round_start(0, 0)
+
+        initial_action_count = 0
+        if initial_markets:
+            # Use agent 0 to create seed markets
+            agent_0 = result.env.agent_graph.get_agent(0)
+            seed_actions = []
+            for market in initial_markets:
+                seed_actions.append(ManualAction(
+                    action_type="create_market",
+                    action_args={
+                        "question": market.get("question", ""),
+                        "outcome_a": market.get("outcome_a", "YES"),
+                        "outcome_b": market.get("outcome_b", "NO"),
+                    },
+                ))
+                initial_action_count += 1
+
+            await result.env.step({agent_0: seed_actions})
+            log_info(f"Seeded {len(seed_actions)} initial markets")
+
+            # Log seed actions
+            if action_logger:
+                for market in initial_markets:
+                    action_logger.log_action(
+                        round_num=0,
+                        agent_id=0,
+                        agent_name=agent_names.get(0, "Agent_0"),
+                        action_type="CREATE_MARKET",
+                        action_args={"question": market.get("question", "")},
+                    )
+
+        if action_logger:
+            action_logger.log_round_end(0, initial_action_count)
+
+    # Main simulation loop
+    time_config = config.get("time_config", {})
+    total_hours = time_config.get("total_simulation_hours", 72)
+    minutes_per_round = time_config.get("minutes_per_round", 30)
+    total_rounds = (total_hours * 60) // minutes_per_round
+
+    if max_rounds is not None and max_rounds > 0:
+        original_rounds = total_rounds
+        total_rounds = min(total_rounds, max_rounds)
+        if total_rounds < original_rounds:
+            log_info(f"Rounds truncated: {original_rounds} -> {total_rounds}")
+
+    # Initialize belief tracking for Polymarket
+    belief_tracker = BeliefTracker(config, simulation_dir, "polymarket")
+    log_info(f"Belief tracking: {len(belief_tracker.topics)} topics")
+
+    start_time = datetime.now()
+    total_actions = 0
+    last_rowid = 0
+
+    # Counterfactual branch spec (fires once at trigger_round when present)
+    cf_spec = load_counterfactual(simulation_dir)
+    if cf_spec:
+        log_info(
+            f"Counterfactual branch active: will fire at round "
+            f"{cf_spec.get('trigger_round')} — {cf_spec.get('label', 'unlabeled')}"
+        )
+
+    if start_round > 0:
+        log_info(f"Resuming from round {start_round}")
+
+    for round_num in range(start_round, total_rounds):
+        if _shutdown_event and _shutdown_event.is_set():
+            if main_logger:
+                main_logger.info(
+                    f"Shutdown signal, stopping at round {round_num + 1}"
+                )
+            break
+
+        # Surface round number to subprocess LLM calls for Langfuse metadata
+        os.environ['MIROSHARK_ROUND_NUM'] = str(round_num + 1)
+
+        simulated_minutes = round_num * minutes_per_round
+        simulated_hour = (simulated_minutes // 60) % 24
+        simulated_day = simulated_minutes // (60 * 24) + 1
+
+        active_agents = get_active_agents_for_round(
+            result.env, config, simulated_hour, round_num
+        )
+
+        if action_logger:
+            action_logger.log_round_start(round_num + 1, simulated_hour)
+
+        if not active_agents:
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            continue
+
+        # Inject beliefs BEFORE the round so agents act on current stance
+        if belief_tracker and round_num > 0:
+            for agent_id, agent in active_agents:
+                bs = belief_tracker.belief_states.get(agent_id)
+                if bs:
+                    inject_belief_context(agent, bs.to_prompt_text())
+
+        # Inject cross-platform digest
+        if cross_platform_log:
+            for agent_id, agent in active_agents:
+                digest = cross_platform_log.build_digest(
+                    agent_id, exclude_platform="polymarket"
+                )
+                if digest:
+                    inject_cross_platform_context(agent, digest)
+
+        # Inject social media sentiment so traders see what the crowd is saying
+        if market_media_bridge:
+            sentiment_prompt = market_media_bridge.get_sentiment_prompt()
+            if sentiment_prompt:
+                for _, agent in active_agents:
+                    inject_sentiment_context(agent, sentiment_prompt)
+
+        # Counterfactual: fire exactly once, at the trigger round
+        if cf_spec and round_num == int(cf_spec.get("trigger_round", -1)):
+            label = cf_spec.get("label") or "counterfactual event"
+            cf_text = f"[COUNTERFACTUAL] {label}: {cf_spec['injection_text'].strip()}"
+            for _, agent in active_agents:
+                inject_director_event_context(agent, cf_text)
+            log_info(f"Counterfactual fired at round {round_num + 1}: {label}")
+
+        actions = {agent: LLMAction() for _, agent in active_agents}
+        if not await _safe_env_step(result.env, actions, round_num, log_info):
+            if action_logger:
+                action_logger.log_round_end(round_num + 1, 0)
+            continue
+
+        # Fetch actions from trace table
+        try:
+            actual_actions, last_rowid = _fetch_polymarket_actions_from_db(
+                db_path, last_rowid, agent_names
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} fetch_actions failed: {exc!r}")
+            actual_actions = []
+
+        # Publish updated market prices to bridge for social media agents to see
+        if market_media_bridge:
+            try:
+                market_media_bridge.update_prices(db_path, round_num)
+            except Exception as exc:  # noqa: BLE001
+                log_info(f"Round {round_num + 1} market price update failed: {exc!r}")
+
+        # Update beliefs based on this round's actions (will be injected next round)
+        try:
+            belief_tracker.after_round(db_path, result.env, active_agents, round_num, actual_actions)
+        except Exception as exc:  # noqa: BLE001
+            log_info(f"Round {round_num + 1} belief update failed: {exc!r}")
+
+        # Record to cross-platform log
+        if cross_platform_log and actual_actions:
+            cross_platform_log.record("polymarket", actual_actions)
+
+        round_action_count = 0
+        for action_data in actual_actions:
+            if action_logger:
+                action_logger.log_action(
+                    round_num=round_num + 1,
+                    agent_id=action_data['agent_id'],
+                    agent_name=action_data['agent_name'],
+                    action_type=action_data['action_type'],
+                    action_args=action_data['action_args'],
+                )
+                total_actions += 1
+                round_action_count += 1
+
+        if action_logger:
+            action_logger.log_round_end(round_num + 1, round_action_count)
+
+        if (round_num + 1) % 20 == 0:
+            progress = (round_num + 1) / total_rounds * 100
+            log_info(
+                f"Day {simulated_day}, {simulated_hour:02d}:00 - "
+                f"Round {round_num + 1}/{total_rounds} ({progress:.1f}%)"
+            )
+
+    if action_logger:
+        action_logger.log_simulation_end(total_rounds, total_actions)
+
+    result.total_actions = total_actions
+    elapsed = (datetime.now() - start_time).total_seconds()
+    log_info(f"Simulation loop completed! Elapsed: {elapsed:.1f}s, total actions: {total_actions}")
+
+    # Save belief trajectory
+    traj_path = belief_tracker.save_trajectory()
+    log_info(f"Belief trajectory saved: {traj_path}")
+    log_info(belief_tracker.get_summary())
+
+    return result
+
+
+# ============================================================
+# Synchronized multi-platform simulation
+# All platforms step together: round N completes on ALL platforms
+# before round N+1 starts on ANY platform.
+# This ensures the Market-Media Bridge data is never stale.
+# ============================================================
+
+async def run_synchronized_simulation(
+    config: Dict[str, Any],
+    simulation_dir: str,
+    twitter_logger: Optional[PlatformActionLogger] = None,
+    reddit_logger: Optional[PlatformActionLogger] = None,
+    polymarket_logger: Optional[PlatformActionLogger] = None,
+    main_logger: Optional[SimulationLogManager] = None,
+    max_rounds: Optional[int] = None,
+    start_round: int = 0,
+    cross_platform_log: Optional[CrossPlatformLog] = None,
+    has_twitter: bool = False,
+    has_reddit: bool = False,
+    has_polymarket: bool = False,
+) -> Tuple[Optional[PlatformSimulation], Optional[PlatformSimulation], Optional[PlatformSimulation]]:
+    """Run all platforms in lock-step: one round at a time across all platforms.
+
+    Returns (twitter_result, reddit_result, polymarket_result).
+    """
+    def log_info(msg):
+        if main_logger:
+            main_logger.info(f"[Sync] {msg}")
+        print(f"[Sync] {msg}")
+
+    agent_names = get_agent_names_from_config(config)
+    model = create_model(config, use_boost=False)
+
+    # Create bridge (always enabled in sync mode)
+    bridge = MarketMediaBridge()
+    log_info("Synchronized mode: all platforms step together per round")
+    log_info("Market-Media Bridge: ENABLED")
+
+    # Create round memory (sliding-window context from all platforms)
+    from app.utils.llm_client import create_llm_client
+    try:
+        memory_llm = create_llm_client()
+    except Exception:
+        memory_llm = None
+    time_config = config.get("time_config", {})
+    round_memory = RoundMemory(
+        llm_client=memory_llm,
+        minutes_per_round=time_config.get("minutes_per_round", 60),
+    )
+    log_info("Round Memory: ENABLED")
+
+    # ── Setup phase: initialize all platform environments in parallel ──
+    twitter_result = None
+    reddit_result = None
+    polymarket_result = None
+
+    twitter_db = os.path.join(simulation_dir, "twitter_simulation.db")
+    reddit_db = os.path.join(simulation_dir, "reddit_simulation.db")
+    polymarket_db = os.path.join(simulation_dir, "polymarket_simulation.db")
+
+    if has_twitter:
+        twitter_result = PlatformSimulation()
+        profile_path = os.path.join(simulation_dir, "twitter_profiles.csv")
+        twitter_result.agent_graph = await generate_twitter_agent_graph(
+            profile_path=profile_path, model=model, available_actions=TWITTER_ACTIONS,
+        )
+        for agent_id, agent in twitter_result.agent_graph.get_agents():
+            if agent_id not in agent_names:
+                agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
+        if start_round == 0 and os.path.exists(twitter_db):
+            os.remove(twitter_db)
+        twitter_result.env = wonderwall.make(
+            agent_graph=twitter_result.agent_graph,
+            platform=wonderwall.DefaultPlatformType.TWITTER,
+            database_path=twitter_db, semaphore=60,
+        )
+        await twitter_result.env.reset()
+        log_info("[Twitter] Environment ready")
+
+    if has_reddit:
+        reddit_result = PlatformSimulation()
+        profile_path = os.path.join(simulation_dir, "reddit_profiles.json")
+        reddit_result.agent_graph = await generate_reddit_agent_graph(
+            profile_path=profile_path, model=model, available_actions=REDDIT_ACTIONS,
+        )
+        for agent_id, agent in reddit_result.agent_graph.get_agents():
+            if agent_id not in agent_names:
+                agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
+        if start_round == 0 and os.path.exists(reddit_db):
+            os.remove(reddit_db)
+        reddit_result.env = wonderwall.make(
+            agent_graph=reddit_result.agent_graph,
+            platform=wonderwall.DefaultPlatformType.REDDIT,
+            database_path=reddit_db, semaphore=60,
+        )
+        await reddit_result.env.reset()
+        log_info("[Reddit] Environment ready")
+
+    if has_polymarket:
+        polymarket_result = PlatformSimulation()
+        profile_path = os.path.join(simulation_dir, "polymarket_profiles.json")
+        profiles = _load_polymarket_profiles(profile_path)
+        polymarket_result.agent_graph = _build_polymarket_agent_graph(profiles, model)
+        for agent_id, agent in polymarket_result.agent_graph.get_agents():
+            if agent_id not in agent_names:
+                agent_names[agent_id] = getattr(agent, 'name', f'Agent_{agent_id}')
+        if start_round == 0 and os.path.exists(polymarket_db):
+            os.remove(polymarket_db)
+        polymarket_result.env = wonderwall.make(
+            agent_graph=polymarket_result.agent_graph,
+            simulation=polymarket_simulation,
+            database_path=polymarket_db,
+            semaphore=60,
+        )
+        await polymarket_result.env.reset()
+        log_info("[Polymarket] Environment ready")
+
+    # Universal agent guidelines (e.g. "no hashtags"), injected once per
+    # platform. System messages persist, so this covers the whole run.
+    for _label, _result in (
+        ("Twitter", twitter_result),
+        ("Reddit", reddit_result),
+        ("Polymarket", polymarket_result),
+    ):
+        if _result is not None:
+            _n = inject_posting_rules_into_graph(_result.agent_graph)
+            if _n:
+                log_info(f"[{_label}] Posting rules injected into {_n} agents")
+
+    # ── Initialize belief trackers ──
+    twitter_belief = BeliefTracker(config, simulation_dir, "twitter") if has_twitter else None
+    reddit_belief = BeliefTracker(config, simulation_dir, "reddit") if has_reddit else None
+    polymarket_belief = BeliefTracker(config, simulation_dir, "polymarket") if has_polymarket else None
+
+    # ── Action loggers ──
+    if twitter_logger:
+        twitter_logger.log_simulation_start(config)
+    if reddit_logger:
+        reddit_logger.log_simulation_start(config)
+    if polymarket_logger:
+        polymarket_logger.log_simulation_start(config)
+
+    # ── Execute initial events (round 0) ──
+    event_config = config.get("event_config", {})
+    initial_posts = event_config.get("initial_posts", [])
+    if start_round == 0 and initial_posts:
+        for platform_result, platform_name in [
+            (twitter_result, "twitter"), (reddit_result, "reddit")
+        ]:
+            if not platform_result:
+                continue
+            initial_actions = {}
+            for post in initial_posts:
+                agent_id = post.get("poster_agent_id", 0)
+                content = post.get("content", "")
+                try:
+                    agent = platform_result.env.agent_graph.get_agent(agent_id)
+                    initial_actions[agent] = ManualAction(
+                        action_type=ActionType.CREATE_POST,
+                        action_args={"content": content}
+                    )
+                except Exception:
+                    pass
+            if initial_actions:
+                await platform_result.env.step(initial_actions)
+                log_info(f"[{platform_name.capitalize()}] Published {len(initial_actions)} initial posts")
+
+    # ── Seed Polymarket initial markets (round 0) ──
+    initial_markets = event_config.get("initial_markets", [])
+    if start_round == 0 and initial_markets and polymarket_result:
+        agent_0 = polymarket_result.env.agent_graph.get_agent(0)
+        seed_actions = []
+        for market in initial_markets:
+            prob = market.get("initial_probability", 0.5)
+            seed_actions.append(ManualAction(
+                action_type="create_market",
+                action_args={
+                    "question": market.get("question", ""),
+                    "outcome_a": market.get("outcome_a", "YES"),
+                    "outcome_b": market.get("outcome_b", "NO"),
+                    "initial_probability": prob,
+                },
+            ))
+        if seed_actions:
+            await polymarket_result.env.step({agent_0: seed_actions})
+            for m in initial_markets:
+                prob = m.get("initial_probability", 0.5)
+                log_info(f"  Market: \"{m['question'][:60]}...\" (initial: {prob:.0%})")
+            log_info(f"[Polymarket] Seeded {len(seed_actions)} markets")
+
+    # ── Synchronized round loop ──
+    time_config = config.get("time_config", {})
+    total_hours = time_config.get("total_simulation_hours", 72)
+    minutes_per_round = time_config.get("minutes_per_round", 30)
+    total_rounds = (total_hours * 60) // minutes_per_round
+
+    if max_rounds is not None and max_rounds > 0:
+        total_rounds = min(total_rounds, max_rounds)
+
+    twitter_last_rowid = 0
+    reddit_last_rowid = 0
+    polymarket_last_rowid = 0
+
+    # ── Per-agent MCP bridge (optional) ─────────────────────────────────────
+    # When MCP_AGENT_TOOLS_ENABLED=true, spin up the MCP server subprocesses
+    # listed in config/mcp_servers.yaml and build a map of which agent ids
+    # are allowed to call them (set per-persona in profile JSON).
+    mcp_bridge = None
+    mcp_tool_agent_ids: set = set()
+    mcp_server_names: list = []
+    # agent_id -> list[MCPCallResult] pending injection next round
+    mcp_pending_results: "dict[int, list]" = {}
+
+    if _MCP_IMPORT_OK and os.environ.get("MCP_AGENT_TOOLS_ENABLED", "false").lower() == "true":
+        try:
+            # Defer import to avoid pulling flask config at module import time.
+            from app.services.agent_mcp_tools import load_registry  # type: ignore
+            registry = load_registry()
+            if registry:
+                mcp_bridge = MCPAgentBridge(registry)
+                mcp_server_names = list(registry.keys())
+                # Collect tools_enabled agent_ids from profile JSONs.
+                for fname in ("reddit_profiles.json", "polymarket_profiles.json"):
+                    fpath = os.path.join(simulation_dir, fname)
+                    if not os.path.exists(fpath):
+                        continue
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as fh:
+                            profs = json.load(fh)
+                        for p in profs:
+                            if p.get("tools_enabled"):
+                                mcp_tool_agent_ids.add(int(p.get("user_id") or p.get("agent_id") or -1))
+                    except Exception as exc:
+                        log_info(f"[MCP] Failed to read {fname}: {exc}")
+                mcp_tool_agent_ids.discard(-1)
+                log_info(
+                    f"[MCP] Bridge ready: {len(registry)} server(s), "
+                    f"{len(mcp_tool_agent_ids)} tool-enabled agent(s)"
+                )
+        except Exception as exc:
+            log_info(f"[MCP] Bridge init failed ({exc}); continuing without per-agent MCP")
+            mcp_bridge = None
+
+    start_time = datetime.now()
+    log_info(f"Starting synchronized simulation: {total_rounds} rounds")
+
+    # Counterfactual branch spec (fires once at trigger_round when present)
+    cf_spec = load_counterfactual(simulation_dir)
+    if cf_spec:
+        log_info(
+            f"Counterfactual branch active: will fire at round "
+            f"{cf_spec.get('trigger_round')} — {cf_spec.get('label', 'unlabeled')}"
+        )
+
+    for round_num in range(start_round, total_rounds):
+        if _shutdown_event and _shutdown_event.is_set():
+            log_info(f"Shutdown signal at round {round_num + 1}")
+            break
+
+        # Surface round number to subprocess LLM calls for Langfuse metadata
+        os.environ['MIROSHARK_ROUND_NUM'] = str(round_num + 1)
+
+        simulated_minutes = round_num * minutes_per_round
+        simulated_hour = (simulated_minutes // 60) % 24
+        simulated_day = simulated_minutes // (60 * 24) + 1
+
+        # ── Initialize round memory for this round ──
+        round_memory.start_round(round_num, simulated_day, simulated_hour)
+
+        # ── Director Mode + Counterfactual: build unified injection text ──
+        director_events = consume_pending_events(simulation_dir, round_num + 1)
+        event_texts = [e["event_text"] for e in director_events] if director_events else []
+        if cf_spec and round_num == int(cf_spec.get("trigger_round", -1)):
+            label = cf_spec.get("label") or "counterfactual event"
+            event_texts.append(
+                f"[COUNTERFACTUAL] {label}: {cf_spec['injection_text'].strip()}"
+            )
+            log_info(f"Counterfactual fired at round {round_num + 1}: {label}")
+        director_text = " | ".join(event_texts) if event_texts else None
+        if director_events:
+            log_info(f"Director Mode: injected {len(director_events)} event(s) at round {round_num + 1}")
+
+        # ── All 3 platforms run simultaneously ──
+        # Build shared context once (previous rounds only — current round is empty)
+        memory_ctx = round_memory.build_context(round_num)
+        market_prompt = bridge.get_market_prompt()
+        sentiment_prompt = bridge.get_sentiment_prompt()
+
+        platform_tasks = []
+
+        if twitter_result:
+            active = get_active_agents_for_round(twitter_result.env, config, simulated_hour, round_num)
+            if active:
+                # Inject beliefs BEFORE the round so agents act on current stance
+                if twitter_belief and round_num > 0:
+                    for agent_id, agent in active:
+                        bs = twitter_belief.belief_states.get(agent_id)
+                        if bs:
+                            inject_belief_context(agent, bs.to_prompt_text())
+                if memory_ctx:
+                    for _, agent in active:
+                        inject_round_memory(agent, memory_ctx)
+                if market_prompt:
+                    for _, agent in active:
+                        inject_market_context(agent, market_prompt)
+                if cross_platform_log:
+                    for agent_id, agent in active:
+                        digest = cross_platform_log.build_digest(agent_id, exclude_platform="twitter")
+                        if digest:
+                            inject_cross_platform_context(agent, digest)
+                if director_text:
+                    for _, agent in active:
+                        inject_director_event_context(agent, director_text)
+                _mcp_inject_and_dispatch_pre_round(
+                    active, mcp_bridge, mcp_server_names, mcp_tool_agent_ids, mcp_pending_results
+                )
+
+                async def _step_twitter(active_agents=active):
+                    actions = {agent: LLMAction() for _, agent in active_agents}
+                    await twitter_result.env.step(actions)
+                    return active_agents
+
+                platform_tasks.append(("twitter", _step_twitter()))
+
+        if reddit_result:
+            active = get_active_agents_for_round(reddit_result.env, config, simulated_hour, round_num)
+            if active:
+                if reddit_belief and round_num > 0:
+                    for agent_id, agent in active:
+                        bs = reddit_belief.belief_states.get(agent_id)
+                        if bs:
+                            inject_belief_context(agent, bs.to_prompt_text())
+                if memory_ctx:
+                    for _, agent in active:
+                        inject_round_memory(agent, memory_ctx)
+                if market_prompt:
+                    for _, agent in active:
+                        inject_market_context(agent, market_prompt)
+                if cross_platform_log:
+                    for agent_id, agent in active:
+                        digest = cross_platform_log.build_digest(agent_id, exclude_platform="reddit")
+                        if digest:
+                            inject_cross_platform_context(agent, digest)
+                if director_text:
+                    for _, agent in active:
+                        inject_director_event_context(agent, director_text)
+                _mcp_inject_and_dispatch_pre_round(
+                    active, mcp_bridge, mcp_server_names, mcp_tool_agent_ids, mcp_pending_results
+                )
+
+                async def _step_reddit(active_agents=active):
+                    actions = {agent: LLMAction() for _, agent in active_agents}
+                    await reddit_result.env.step(actions)
+                    return active_agents
+
+                platform_tasks.append(("reddit", _step_reddit()))
+
+        if polymarket_result:
+            active = get_active_agents_for_round(polymarket_result.env, config, simulated_hour, round_num)
+            if active:
+                if polymarket_belief and round_num > 0:
+                    for agent_id, agent in active:
+                        bs = polymarket_belief.belief_states.get(agent_id)
+                        if bs:
+                            inject_belief_context(agent, bs.to_prompt_text())
+                if memory_ctx:
+                    for _, agent in active:
+                        inject_round_memory(agent, memory_ctx)
+                if sentiment_prompt:
+                    for _, agent in active:
+                        inject_sentiment_context(agent, sentiment_prompt)
+                if market_prompt:
+                    for _, agent in active:
+                        inject_market_context(agent, market_prompt)
+                if cross_platform_log:
+                    for agent_id, agent in active:
+                        digest = cross_platform_log.build_digest(agent_id, exclude_platform="polymarket")
+                        if digest:
+                            inject_cross_platform_context(agent, digest)
+                if director_text:
+                    for _, agent in active:
+                        inject_director_event_context(agent, director_text)
+                _mcp_inject_and_dispatch_pre_round(
+                    active, mcp_bridge, mcp_server_names, mcp_tool_agent_ids, mcp_pending_results
+                )
+
+                # Inject social media summary directly into the observation prompt
+                # so traders see it alongside portfolio/market data (not buried in system msg)
+                social_summary = _build_social_summary_for_traders(
+                    round_memory, round_num, bridge
+                )
+                for _, agent in active:
+                    if hasattr(agent, 'env') and hasattr(agent.env, 'extra_observation_context'):
+                        agent.env.extra_observation_context = social_summary
+
+                async def _step_polymarket(active_agents=active):
+                    actions = {agent: LLMAction() for _, agent in active_agents}
+                    await polymarket_result.env.step(actions)
+                    return active_agents
+
+                platform_tasks.append(("polymarket", _step_polymarket()))
+
+        # Run ALL platforms in parallel (they all see previous-round context)
+        # Hard timeout prevents a hung LLM call from freezing the whole run.
+        platform_results = {}
+        if platform_tasks:
+            task_names = [t[0] for t in platform_tasks]
+            task_coros = [t[1] for t in platform_tasks]
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*task_coros, return_exceptions=True),
+                    timeout=_ROUND_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                log_info(
+                    f"Round {round_num + 1} timed out after "
+                    f"{_ROUND_TIMEOUT_SECONDS}s — skipping remaining platforms"
+                )
+                results = [asyncio.TimeoutError()] * len(task_names)
+            for name, result in zip(task_names, results):
+                if isinstance(result, Exception):
+                    log_info(f"[{name}] Round {round_num+1} failed: {result!r}")
+                else:
+                    platform_results[name] = result
+
+        # ── Post-round: fetch actions, update beliefs, record to memory ──
+        if "twitter" in platform_results:
+            actual_actions, twitter_last_rowid = fetch_new_actions_from_db(twitter_db, twitter_last_rowid, agent_names)
+            _mcp_dispatch_from_actions(actual_actions, mcp_bridge, mcp_tool_agent_ids, mcp_pending_results)
+            if twitter_belief:
+                twitter_belief.after_round(twitter_db, twitter_result.env, platform_results["twitter"], round_num, actual_actions)
+                bridge.update_sentiment(twitter_belief.belief_states, actual_actions, round_num, "twitter")
+            if cross_platform_log and actual_actions:
+                cross_platform_log.record("twitter", actual_actions)
+            round_memory.record("twitter", round_num, actual_actions)
+            if twitter_logger:
+                twitter_logger.log_round_start(round_num + 1, simulated_hour)
+                for a in actual_actions:
+                    twitter_logger.log_action(round_num=round_num+1, agent_id=a['agent_id'], agent_name=a['agent_name'], action_type=a['action_type'], action_args=a['action_args'])
+                twitter_logger.log_round_end(round_num + 1, len(actual_actions))
+            twitter_result.total_actions += len(actual_actions)
+
+        if "reddit" in platform_results:
+            actual_actions, reddit_last_rowid = fetch_new_actions_from_db(reddit_db, reddit_last_rowid, agent_names)
+            _mcp_dispatch_from_actions(actual_actions, mcp_bridge, mcp_tool_agent_ids, mcp_pending_results)
+            if reddit_belief:
+                reddit_belief.after_round(reddit_db, reddit_result.env, platform_results["reddit"], round_num, actual_actions)
+                bridge.update_sentiment(reddit_belief.belief_states, actual_actions, round_num, "reddit")
+            if cross_platform_log and actual_actions:
+                cross_platform_log.record("reddit", actual_actions)
+            round_memory.record("reddit", round_num, actual_actions)
+            if reddit_logger:
+                reddit_logger.log_round_start(round_num + 1, simulated_hour)
+                for a in actual_actions:
+                    reddit_logger.log_action(round_num=round_num+1, agent_id=a['agent_id'], agent_name=a['agent_name'], action_type=a['action_type'], action_args=a['action_args'])
+                reddit_logger.log_round_end(round_num + 1, len(actual_actions))
+            reddit_result.total_actions += len(actual_actions)
+
+        if "polymarket" in platform_results:
+            bridge.update_prices(polymarket_db, round_num)
+            actual_actions, polymarket_last_rowid = _fetch_polymarket_actions_from_db(polymarket_db, polymarket_last_rowid, agent_names)
+            _mcp_dispatch_from_actions(actual_actions, mcp_bridge, mcp_tool_agent_ids, mcp_pending_results)
+            if polymarket_belief:
+                polymarket_belief.after_round(polymarket_db, polymarket_result.env, platform_results["polymarket"], round_num, actual_actions)
+            if cross_platform_log and actual_actions:
+                cross_platform_log.record("polymarket", actual_actions)
+            round_memory.record("polymarket", round_num, actual_actions)
+            if polymarket_logger:
+                polymarket_logger.log_round_start(round_num + 1, simulated_hour)
+                for a in actual_actions:
+                    polymarket_logger.log_action(round_num=round_num+1, agent_id=a['agent_id'], agent_name=a['agent_name'], action_type=a['action_type'], action_args=a['action_args'])
+                polymarket_logger.log_round_end(round_num + 1, len(actual_actions))
+            polymarket_result.total_actions += len(actual_actions)
+
+        # ── Compact previous round's memory (N-2 becomes a summary) ──
+        await round_memory.compact_previous_round(round_num)
+
+        # ── Progress logging ──
+        if (round_num + 1) % 5 == 0 or round_num == 0:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            progress = (round_num + 1) / total_rounds * 100
+            parts = []
+            if twitter_result:
+                parts.append(f"X:{twitter_result.total_actions}")
+            if reddit_result:
+                parts.append(f"R:{reddit_result.total_actions}")
+            if polymarket_result:
+                parts.append(f"PM:{polymarket_result.total_actions}")
+            log_info(
+                f"Round {round_num+1}/{total_rounds} ({progress:.0f}%) "
+                f"Day {simulated_day} {simulated_hour:02d}:00 — "
+                f"{' '.join(parts)} — {elapsed:.0f}s"
+            )
+
+    # ── Finalize ──
+    if mcp_bridge is not None:
+        try:
+            mcp_bridge.shutdown()
+        except Exception:
+            pass
+    elapsed = (datetime.now() - start_time).total_seconds()
+    log_info(f"Simulation complete! {elapsed:.0f}s total")
+
+    # Save trajectories
+    for tracker, name in [(twitter_belief, "Twitter"), (reddit_belief, "Reddit"), (polymarket_belief, "Polymarket")]:
+        if tracker:
+            traj_path = tracker.save_trajectory()
+            log_info(f"[{name}] Trajectory saved: {traj_path}")
+            log_info(f"[{name}] {tracker.get_summary()}")
+
+    # End loggers
+    for logger, name in [(twitter_logger, "Twitter"), (reddit_logger, "Reddit"), (polymarket_logger, "Polymarket")]:
+        if logger:
+            logger.log_simulation_end(total_rounds, 0)
+
+    return twitter_result, reddit_result, polymarket_result
+
+
+async def main():
+    parser = argparse.ArgumentParser(description='Wonderwall dual-platform parallel simulation')
+    parser.add_argument(
+        '--config', 
+        type=str, 
+        required=True,
+        help='Configuration file path (simulation_config.json)'
+    )
+    parser.add_argument(
+        '--twitter-only',
+        action='store_true',
+        help='Run Twitter simulation only'
+    )
+    parser.add_argument(
+        '--reddit-only',
+        action='store_true',
+        help='Run Reddit simulation only'
+    )
+    parser.add_argument(
+        '--polymarket-only',
+        action='store_true',
+        help='Run Polymarket prediction market simulation only'
+    )
+    parser.add_argument(
+        '--max-rounds',
+        type=int,
+        default=None,
+        help='Maximum simulation rounds (optional, used to truncate long simulations)'
+    )
+    parser.add_argument(
+        '--start-round',
+        type=int,
+        default=0,
+        help='Resume from this round number (skip earlier rounds, append to existing action logs)'
+    )
+    parser.add_argument(
+        '--env-only',
+        action='store_true',
+        default=False,
+        help='Skip simulation, just load environments and enter command waiting mode for interviews'
+    )
+    parser.add_argument(
+        '--no-wait',
+        action='store_true',
+        default=False,
+        help='Close environment immediately after simulation, do not enter command waiting mode'
+    )
+    parser.add_argument(
+        '--cross-platform',
+        action='store_true',
+        default=False,
+        help='Enable cross-platform awareness: agents see a digest of their own activity on other platforms'
+    )
+
+    args = parser.parse_args()
+    
+    # Create shutdown event at the start of main to ensure the entire program can respond to shutdown signals
+    global _shutdown_event
+    _shutdown_event = asyncio.Event()
+    
+    if not os.path.exists(args.config):
+        print(f"Error: Configuration file not found: {args.config}")
+        sys.exit(1)
+
+    config = load_config(args.config)
+    simulation_dir = os.path.dirname(args.config) or "."
+    wait_for_commands = not args.no_wait
+
+    # Initialize logging configuration (disable Wonderwall logs, clean up old files)
+    init_logging_for_simulation(simulation_dir)
+    
+    # Create log manager
+    log_manager = SimulationLogManager(simulation_dir)
+    twitter_logger = log_manager.get_twitter_logger()
+    reddit_logger = log_manager.get_reddit_logger()
+    polymarket_logger = log_manager.get_polymarket_logger()
+
+    log_manager.info("=" * 60)
+    log_manager.info("Wonderwall Multi-Platform Parallel Simulation")
+    log_manager.info(f"Config file: {args.config}")
+    log_manager.info(f"Simulation ID: {config.get('simulation_id', 'unknown')}")
+    log_manager.info(f"Command waiting mode: {'enabled' if wait_for_commands else 'disabled'}")
+    log_manager.info("=" * 60)
+    
+    time_config = config.get("time_config", {})
+    total_hours = time_config.get('total_simulation_hours', 72)
+    minutes_per_round = time_config.get('minutes_per_round', 30)
+    config_total_rounds = (total_hours * 60) // minutes_per_round
+    
+    log_manager.info(f"Simulation parameters:")
+    log_manager.info(f"  - Total simulation duration: {total_hours} hours")
+    log_manager.info(f"  - Time per round: {minutes_per_round} minutes")
+    log_manager.info(f"  - Configured total rounds: {config_total_rounds}")
+    if args.max_rounds:
+        log_manager.info(f"  - Max rounds limit: {args.max_rounds}")
+        if args.max_rounds < config_total_rounds:
+            log_manager.info(f"  - Actual rounds to execute: {args.max_rounds} (truncated)")
+    log_manager.info(f"  - Number of Agents: {len(config.get('agent_configs', []))}")
+
+    log_manager.info("Log structure:")
+    log_manager.info(f"  - Main log: simulation.log")
+    log_manager.info(f"  - Twitter actions: twitter/actions.jsonl")
+    log_manager.info(f"  - Reddit actions: reddit/actions.jsonl")
+    log_manager.info(f"  - Polymarket actions: polymarket/actions.jsonl")
+    log_manager.info("=" * 60)
+
+    start_time = datetime.now()
+
+    # Store simulation results for all platforms
+    twitter_result: Optional[PlatformSimulation] = None
+    reddit_result: Optional[PlatformSimulation] = None
+    polymarket_result: Optional[PlatformSimulation] = None
+
+    if args.env_only:
+        # --env-only: skip simulation, just create environments for interviews
+        log_manager.info("ENV-ONLY mode: loading environments without running simulation...")
+        model = create_model(config, use_boost=False)
+
+        # Twitter env
+        twitter_profile_path = os.path.join(simulation_dir, "twitter_profiles.csv")
+        if os.path.exists(twitter_profile_path):
+            twitter_result = PlatformSimulation()
+            twitter_result.agent_graph = await generate_twitter_agent_graph(
+                profile_path=twitter_profile_path, model=model, available_actions=TWITTER_ACTIONS,
+            )
+            db_path = os.path.join(simulation_dir, "twitter_simulation.db")
+            twitter_result.env = wonderwall.make(
+                agent_graph=twitter_result.agent_graph,
+                platform=wonderwall.DefaultPlatformType.TWITTER,
+                database_path=db_path, semaphore=60,
+            )
+            await twitter_result.env.reset()
+            log_manager.info("[Twitter] Environment loaded")
+
+        # Reddit env
+        reddit_profile_path = os.path.join(simulation_dir, "reddit_profiles.json")
+        if os.path.exists(reddit_profile_path):
+            reddit_result = PlatformSimulation()
+            reddit_result.agent_graph = await generate_reddit_agent_graph(
+                profile_path=reddit_profile_path, model=model, available_actions=REDDIT_ACTIONS,
+            )
+            db_path = os.path.join(simulation_dir, "reddit_simulation.db")
+            reddit_result.env = wonderwall.make(
+                agent_graph=reddit_result.agent_graph,
+                platform=wonderwall.DefaultPlatformType.REDDIT,
+                database_path=db_path, semaphore=60,
+            )
+            await reddit_result.env.reset()
+            log_manager.info("[Reddit] Environment loaded")
+
+        log_manager.info("Environments ready for interviews")
+        wait_for_commands = True  # force waiting mode
+    else:
+        # Create cross-platform log if enabled (shared between all platform coroutines)
+        xp_log = CrossPlatformLog() if args.cross_platform else None
+        if xp_log:
+            log_manager.info("Cross-platform awareness ENABLED: agents will see their activity on other platforms")
+
+        # Check which platforms have profile files
+        has_twitter = os.path.exists(os.path.join(simulation_dir, "twitter_profiles.csv"))
+        has_reddit = os.path.exists(os.path.join(simulation_dir, "reddit_profiles.json"))
+        has_polymarket = os.path.exists(os.path.join(simulation_dir, "polymarket_profiles.json"))
+
+        # Create market-media bridge when both social media AND polymarket are running
+        has_social = has_twitter or has_reddit
+        bridge = MarketMediaBridge() if (has_social and has_polymarket) else None
+        if bridge:
+            log_manager.info("Market-Media Bridge ENABLED: social media agents see market prices, traders see social sentiment")
+
+        if args.twitter_only:
+            twitter_result = await run_twitter_simulation(config, simulation_dir, twitter_logger, log_manager, args.max_rounds, args.start_round, cross_platform_log=xp_log)
+        elif args.reddit_only:
+            reddit_result = await run_reddit_simulation(config, simulation_dir, reddit_logger, log_manager, args.max_rounds, args.start_round, cross_platform_log=xp_log)
+        elif args.polymarket_only:
+            polymarket_result = await run_polymarket_simulation(config, simulation_dir, polymarket_logger, log_manager, args.max_rounds, args.start_round, cross_platform_log=xp_log)
+        else:
+            # Multiple platforms: use synchronized mode so they step together
+            # This ensures the Market-Media Bridge data is never stale
+            platform_count = sum([has_twitter, has_reddit, has_polymarket])
+            platform_names = [p for p, h in [("Twitter", has_twitter), ("Reddit", has_reddit), ("Polymarket", has_polymarket)] if h]
+            log_manager.info(f"Launching {platform_count} platforms in SYNCHRONIZED mode: {', '.join(platform_names)}")
+
+            twitter_result, reddit_result, polymarket_result = await run_synchronized_simulation(
+                config=config,
+                simulation_dir=simulation_dir,
+                twitter_logger=twitter_logger,
+                reddit_logger=reddit_logger,
+                polymarket_logger=polymarket_logger,
+                main_logger=log_manager,
+                max_rounds=args.max_rounds,
+                start_round=args.start_round,
+                cross_platform_log=xp_log,
+                has_twitter=has_twitter,
+                has_reddit=has_reddit,
+                has_polymarket=has_polymarket,
+            )
+
+    total_elapsed = (datetime.now() - start_time).total_seconds()
+    log_manager.info("=" * 60)
+    log_manager.info(f"{'Environment setup' if args.env_only else 'Simulation loop'} completed! Total elapsed: {total_elapsed:.1f}s")
+    
+    # Whether to enter command waiting mode
+    if wait_for_commands:
+        log_manager.info("")
+        log_manager.info("=" * 60)
+        log_manager.info("Entering command waiting mode - environment stays running")
+        log_manager.info("Supported commands: interview, batch_interview, close_env")
+        log_manager.info("=" * 60)
+        
+        # Create IPC handler
+        ipc_handler = ParallelIPCHandler(
+            simulation_dir=simulation_dir,
+            twitter_env=twitter_result.env if twitter_result else None,
+            twitter_agent_graph=twitter_result.agent_graph if twitter_result else None,
+            reddit_env=reddit_result.env if reddit_result else None,
+            reddit_agent_graph=reddit_result.agent_graph if reddit_result else None
+        )
+        ipc_handler.update_status("alive")
+        
+        # Command waiting loop (using global _shutdown_event)
+        try:
+            while not _shutdown_event.is_set():
+                should_continue = await ipc_handler.process_commands()
+                if not should_continue:
+                    break
+                # Use wait_for instead of sleep so we can respond to shutdown_event
+                try:
+                    await asyncio.wait_for(_shutdown_event.wait(), timeout=0.5)
+                    break  # Received shutdown signal
+                except asyncio.TimeoutError:
+                    pass  # Timeout, continue loop
+        except KeyboardInterrupt:
+            print("\nReceived interrupt signal")
+        except asyncio.CancelledError:
+            print("\nTask cancelled")
+        except Exception as e:
+            print(f"\nCommand processing error: {e}")
+
+        log_manager.info("\nShutting down environment...")
+        ipc_handler.update_status("stopped")
+    
+    # Close environments
+    if twitter_result and twitter_result.env:
+        await twitter_result.env.close()
+        log_manager.info("[Twitter] Environment closed")
+    
+    if reddit_result and reddit_result.env:
+        await reddit_result.env.close()
+        log_manager.info("[Reddit] Environment closed")
+    
+    log_manager.info("=" * 60)
+    log_manager.info(f"All done!")
+    log_manager.info(f"Log files:")
+    log_manager.info(f"  - {os.path.join(simulation_dir, 'simulation.log')}")
+    log_manager.info(f"  - {os.path.join(simulation_dir, 'twitter', 'actions.jsonl')}")
+    log_manager.info(f"  - {os.path.join(simulation_dir, 'reddit', 'actions.jsonl')}")
+    log_manager.info("=" * 60)
+
+
+def setup_signal_handlers(loop=None):
+    """
+    Set up signal handlers to ensure graceful exit on SIGTERM/SIGINT
+
+    Persistent simulation scenario: does not exit after simulation, waits for interview commands
+    When a termination signal is received:
+    1. Notify the asyncio loop to exit waiting
+    2. Give the program a chance to clean up resources (close database, environment, etc.)
+    3. Then exit
+    """
+    def signal_handler(signum, frame):
+        global _cleanup_done
+        sig_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        print(f"\nReceived {sig_name} signal, exiting...")
+
+        if not _cleanup_done:
+            _cleanup_done = True
+            # Set event to notify asyncio loop to exit (giving it a chance to clean up resources)
+            if _shutdown_event:
+                _shutdown_event.set()
+        
+        # Don't call sys.exit() directly, let the asyncio loop exit normally and clean up resources
+        # Only force exit on repeated signals
+        else:
+            print("Force exiting...")
+            sys.exit(1)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+
+if __name__ == "__main__":
+    setup_signal_handlers()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nProgram interrupted")
+    except SystemExit:
+        pass
+    finally:
+        # Clean up multiprocessing resource tracker (prevent warnings on exit)
+        try:
+            from multiprocessing import resource_tracker
+            resource_tracker._resource_tracker._stop()
+        except Exception:
+            pass
+        print("Simulation process exited")

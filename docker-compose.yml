@@ -1,0 +1,59 @@
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: miroshark-polymarket
+    environment:
+      # Flask backend
+      - FLASK_HOST=0.0.0.0
+      - FLASK_PORT=5001
+      - FLASK_DEBUG=False
+
+      # Together AI — replaces Ollama
+      - LLM_API_KEY=${TOGETHER_AI_API_KEY}
+      - LLM_BASE_URL=https://api.together.xyz/v1
+      - LLM_MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct-Turbo
+
+      # Embeddings via Together AI
+      - EMBEDDING_PROVIDER=openai
+      - EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+      - EMBEDDING_BASE_URL=https://api.together.xyz/v1
+      - EMBEDDING_API_KEY=${TOGETHER_AI_API_KEY}
+      - EMBEDDING_DIMENSIONS=768
+
+      # Neo4j Aura Free
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+
+      # Polymarket
+      - POLYMARKET_PRIVATE_KEY=${POLYMARKET_PRIVATE_KEY}
+
+      # Research agent model (free tier)
+      - RESEARCH_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
+
+      # Admin
+      - MIROSHARK_ADMIN_TOKEN=${MIROSHARK_ADMIN_TOKEN:-change_me}
+
+      # Vite frontend API base (points to nginx which proxies to Flask)
+      - VITE_API_BASE_URL=http://localhost/api
+    ports:
+      - "3000:3000"
+      - "5001:5001"
+    volumes:
+      - research_data:/app/backend/uploads
+    restart: unless-stopped
+
+volumes:
+  research_data:

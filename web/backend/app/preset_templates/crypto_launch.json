@@ -1,0 +1,77 @@
+{
+  "id": "crypto_launch",
+  "name": "Crypto Token Launch",
+  "category": "Crypto & Finance",
+  "description": "Simulate the social media frenzy around a new cryptocurrency token launch. Observe how traders, influencers, skeptics, and retail investors create hype cycles, spread FUD, and move market sentiment.",
+  "icon": "chart",
+  "difficulty": "easy",
+  "estimated_agents": 20,
+  "estimated_rounds": 36,
+  "platforms": ["twitter", "reddit", "polymarket"],
+  "tags": ["crypto", "trading", "hype", "market sentiment"],
+  "simulation_requirement": "Simulate the social media reaction to a new AI-focused cryptocurrency token launch over 36 hours. Track how crypto influencers, day traders, long-term investors, skeptics, and retail newcomers interact. Focus on hype cycles, fear/greed dynamics, how misinformation spreads vs corrections, and the role of influencer endorsements in shaping market sentiment. Include prediction market dynamics where participants bet on the token's price trajectory.",
+  "seed_document": "# NeuralCoin ($NRAL) Token Launch\n\n## Project Overview\nNeuralCoin is a new cryptocurrency project that claims to combine AI and blockchain technology. The token launched today on a major decentralized exchange with an initial market cap of $5 million.\n\n## Key Claims\n- \"Revolutionary AI-powered smart contracts that optimize themselves\"\n- Partnership announcement with a mid-tier AI research lab\n- Team includes 3 former engineers from major tech companies\n- Whitepaper released 2 weeks ago, 47 pages\n- Tokenomics: 1 billion total supply, 20% public sale, 15% team (2-year vest), 30% ecosystem fund, 35% community rewards\n\n## Launch Day Events\n- Token listed at $0.005, quickly rose to $0.012 in first hour (+140%)\n- A prominent crypto influencer (800K followers) tweeted \"Just loaded a bag of $NRAL. The AI narrative is going to be massive this cycle.\"\n- Another influencer with 1.2M followers posted a skeptical thread: \"Looked into NeuralCoin. The whitepaper has some red flags...\"\n- Initial liquidity: $2M locked for 1 year\n- First 4 hours: 12,000 unique wallet holders\n- A whale bought $150K worth in a single transaction, visible on-chain\n- The project's Telegram has grown from 3K to 18K members in 24 hours\n\n## Market Context\n- Broader crypto market is in a mild uptrend (+3% over past week)\n- AI-themed tokens have been the strongest sector for 2 months\n- Recent high-profile rug pull in the AI token space (different project) has made some investors cautious\n- Bitcoin is trading near an all-time high, creating general market optimism\n- Regulatory concerns about AI tokens mentioned in a recent SEC statement\n\n## Community Sentiment Triggers\n- The team held an AMA (Ask Me Anything) session, answering technical questions\n- A security auditor gave the smart contract a \"medium confidence\" rating\n- Rumors circulating about a major exchange listing (unconfirmed)\n- A competing project released a negative comparison analysis",
+  "recommended_settings": {
+    "enable_twitter": true,
+    "enable_reddit": true,
+    "enable_polymarket": true
+  },
+  "oracle_tools": [
+    {"server": "feedoracle_core", "tool": "macro_risk",      "args": {}},
+    {"server": "feedoracle_core", "tool": "peg_deviation",   "args": {"token_symbol": "USDT"}}
+  ],
+  "counterfactual_branches": [
+    {
+      "id": "rug_pull",
+      "label": "Team wallet drains liquidity",
+      "description": "The team pulls liquidity around the 12h mark — rug-pull.",
+      "trigger_round": 12,
+      "injection": "On-chain monitors are flagging an unusual multi-sig transaction draining $1.8M of $NRAL liquidity. The team's wallet addresses have gone silent."
+    },
+    {
+      "id": "cex_listing",
+      "label": "Tier-1 CEX listing confirmed",
+      "description": "A top-5 centralized exchange announces $NRAL listing at round 18.",
+      "trigger_round": 18,
+      "injection": "Binance has officially announced a $NRAL/USDT perpetual listing going live in 6 hours. The token is up 70% on the news."
+    },
+    {
+      "id": "sec_notice",
+      "label": "SEC issues Wells notice",
+      "description": "The SEC sends a Wells notice framing $NRAL as an unregistered security.",
+      "trigger_round": 24,
+      "injection": "The SEC has just sent NeuralCoin a Wells notice stating the token may qualify as an unregistered security. The team has 30 days to respond."
+    }
+  ],
+  "i18n": {
+    "zh-CN": {
+      "name": "加密代币发布",
+      "category": "加密货币与金融",
+      "description": "模拟一款新加密代币发布时的社交媒体狂热。观察交易员、KOL、怀疑者与散户如何制造炒作循环、传播 FUD,以及推动市场情绪。",
+      "tags": ["加密货币", "交易", "炒作", "市场情绪"],
+      "counterfactual_branches": [
+        {
+          "id": "rug_pull",
+          "label": "团队钱包抽干流动性",
+          "description": "团队在第 12 小时左右撤走流动性 — Rug Pull。",
+          "trigger_round": 12,
+          "injection": "链上监控检测到一笔异常的多签交易,正在抽走 180 万美元的 $NRAL 流动性。团队的钱包地址全部沉默。"
+        },
+        {
+          "id": "cex_listing",
+          "label": "一线 CEX 确认上线",
+          "description": "在第 18 轮,一家前 5 中心化交易所宣布上线 $NRAL。",
+          "trigger_round": 18,
+          "injection": "币安正式宣布 $NRAL/USDT 永续合约将在 6 小时后上线。受此消息影响,代币上涨 70%。"
+        },
+        {
+          "id": "sec_notice",
+          "label": "SEC 发出 Wells 通知",
+          "description": "SEC 向 $NRAL 发出 Wells 通知,将其定性为未注册证券。",
+          "trigger_round": 24,
+          "injection": "SEC 刚刚向 NeuralCoin 发出 Wells 通知,称该代币可能构成未注册证券。团队需在 30 天内作出回应。"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "campus_controversy",
+  "name": "Campus Controversy",
+  "category": "Education",
+  "description": "Simulate the social media storm around a university policy controversy. See how students, faculty, alumni, journalists, and activists form factions and drive the discourse.",
+  "icon": "school",
+  "difficulty": "easy",
+  "estimated_agents": 25,
+  "estimated_rounds": 48,
+  "platforms": ["twitter", "reddit"],
+  "tags": ["university", "students", "policy", "activism"],
+  "simulation_requirement": "Simulate the social media reaction after a prestigious university announces it will eliminate legacy admissions and implement income-blind admissions over 48 hours. Track how current students, prospective students, alumni (both supportive and opposed), faculty, education journalists, admissions consultants, and policy advocates react. Focus on how different groups frame the issue (fairness vs tradition vs fundraising impact), whether the conversation stays on topic or spirals into broader debates, and what narratives gain the most traction.",
+  "seed_document": "# Whitfield University Eliminates Legacy Admissions\n\n## The Announcement\nWhitfield University, a top-15 nationally ranked private university with a $12 billion endowment, has announced that starting with the next admissions cycle, it will:\n1. Eliminate legacy preferences entirely (previously gave a significant boost to children of alumni)\n2. Implement need-blind admissions for all applicants including international students\n3. Guarantee meeting 100% of demonstrated financial need with grants (no loans)\n4. Cap family contribution at 10% of household income\n\n## Key Context\n- Whitfield currently admits ~2,100 students per year from ~55,000 applicants (3.8% acceptance rate)\n- Legacy applicants historically had a 33% acceptance rate vs 3.2% for non-legacy\n- Legacy admits are ~15% of each class\n- The endowment grew 18% last year\n- Annual alumni giving rate: 48% (one of the highest nationally)\n- Peer institutions have mixed policies — some eliminated legacy in recent years, others maintain it\n\n## University Statement\n\"Whitfield was founded on the principle that talent should determine opportunity, not birthright. Our endowment is strong enough to sustain excellence without relying on preferential admissions for any group. We believe this change will make Whitfield stronger, more diverse, and more meritocratic.\"\n\n## Initial Reactions\n- University president posted the announcement on social media, receiving 50K likes in the first hour\n- The Alumni Association Board issued a \"measured\" response saying they need time to evaluate the impact\n- A group of 200+ alumni donors sent a letter threatening to reduce giving\n- Student government released a statement strongly supporting the change\n- A viral post from a first-generation student: \"This is the Whitfield I chose. Finally.\"\n- An anonymous faculty member told a reporter: \"This has been debated internally for a decade. The fundraising concerns are real.\"\n- A competing university's admissions dean tweeted congratulations\n- An education policy think tank published a rapid analysis predicting minimal revenue impact\n\n## Stakeholder Demographics\n- Current students: 8,500 undergrads, 60% on financial aid, 15% legacy admits\n- Alumni: 180,000 living alumni, median household income $185K\n- Faculty: 1,200, including several who publicly advocated for this change\n- Prospective students: Application season is 3 months away\n- Admissions consultants: An industry that counsels wealthy families on applications",
+  "recommended_settings": {
+    "enable_twitter": true,
+    "enable_reddit": true,
+    "enable_polymarket": false
+  },
+  "i18n": {
+    "zh-CN": {
+      "name": "校园风波",
+      "category": "教育",
+      "description": "模拟一场大学政策争议在社交媒体上掀起的风暴。观察学生、教职工、校友、记者与活动人士如何组成阵营并推动舆论走向。",
+      "tags": ["大学", "学生", "政策", "行动主义"]
+    }
+  }
+}

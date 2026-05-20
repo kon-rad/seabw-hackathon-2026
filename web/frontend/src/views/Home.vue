@@ -1,0 +1,1857 @@
+<template>
+  <div class="home-container">
+    <!-- Top Navigation Bar -->
+    <nav class="navbar">
+      <div class="nav-brand">MIROSHARK</div>
+      <div class="nav-links">
+        <router-link to="/explore" class="explore-link" :title="$tr('Browse public simulations', '浏览公开模拟')">
+          <span class="compass">◎</span> {{ $tr('Explore', '浏览') }}
+        </router-link>
+        <a href="https://github.com/aaronjmars/MiroShark" target="_blank" class="github-link">
+          GitHub <span class="arrow">↗</span>
+        </a>
+        <LocaleToggle />
+        <button class="settings-btn" @click="settingsOpen = true" :title="$tr('Settings', '设置')">
+          ⚙
+        </button>
+      </div>
+    </nav>
+
+    <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
+
+    <!-- Template auto-launch indicator — visible only while resolving a
+         ?template=<slug> link. The redirect to /process/new fires the
+         moment the API responds, so this is a brief 0.3–1.5 s strip; we
+         stay on the home page for slow network so the user has feedback
+         instead of an apparently-frozen click. -->
+    <div v-if="templateAutoLaunching" class="prefill-template-loading">
+      <span class="prefill-template-loading-dot">◇</span>
+      <span>{{ $tr('Loading template — redirecting…', '正在加载模板 — 即将跳转…') }}</span>
+    </div>
+    <div v-if="templateAutoLaunchError" class="prefill-template-error">
+      <span>⚠ {{ templateAutoLaunchError }}</span>
+      <button class="prefill-template-error-close" @click="templateAutoLaunchError = ''">×</button>
+    </div>
+
+    <!-- Document preview modal (URL fetches + Ask-mode generations) -->
+    <Teleport to="body">
+      <div v-if="previewDoc" class="doc-preview-overlay" @click.self="previewDoc = null">
+        <div class="doc-preview-modal">
+          <div class="doc-preview-header">
+            <div class="doc-preview-title">
+              <span class="doc-preview-icon">◈</span>
+              <span>{{ previewDoc.title }}</span>
+            </div>
+            <button class="doc-preview-close" @click="previewDoc = null">✕</button>
+          </div>
+          <div class="doc-preview-warning"></div>
+          <div class="doc-preview-meta">
+            {{ previewDoc.char_count.toLocaleString() }} chars
+            <span v-if="previewDoc.url" class="doc-preview-meta-sep">·</span>
+            <span v-if="previewDoc.url" class="doc-preview-url">{{ previewDoc.url }}</span>
+          </div>
+          <pre class="doc-preview-body">{{ previewDoc.text }}</pre>
+        </div>
+      </div>
+    </Teleport>
+
+    <div class="main-content">
+      <!-- Upper Section: Hero Area -->
+      <section class="hero-section">
+        <div class="tag-row">
+          <span class="orange-tag">{{ $tr('Universal Swarm Intelligence Engine', '通用群体智能引擎') }}</span>
+        </div>
+
+        <h1 class="main-title">
+          <span class="gradient-text">{{ $tr('Simulate anything, for $1', '一切皆可模拟,只需 $1') }}</span>
+        </h1>
+
+        <div class="hero-desc">
+          <p v-if="!$isZh()">
+            Drop in anything — a press release, a news headline, a policy draft, a question you can't answer, a historical what-if — and <span class="highlight-bold">MiroShark</span> spawns <span class="highlight-orange">hundreds of agents</span> that react to it hour by hour. Posting, arguing, trading, changing their minds.
+          </p>
+          <p v-else>
+            放入任何素材 — 新闻稿、头条、政策草案、一个无解的问题、一段历史假设 — <span class="highlight-bold">MiroShark</span> 会派出<span class="highlight-orange">数百个智能体</span>,每小时一轮地做出反应。发帖、辩论、交易、改变想法。
+          </p>
+          <p class="slogan-text">
+            {{ $tr("Don't predict the future. Simulate it", '不要预测未来。模拟它') }}<span class="blinking-cursor">_</span>
+          </p>
+        </div>
+
+        <div class="decoration-square"></div>
+
+        <button class="scroll-down-btn" @click="scrollToBottom">
+          ↓
+        </button>
+      </section>
+
+      <!-- Lower Section: Two-Column Layout -->
+      <section class="dashboard-section">
+        <!-- Left Column: Status & Steps -->
+        <div class="left-panel">
+          <div class="panel-header">
+            <span class="status-dot">■</span> {{ $tr('System Status', '系统状态') }}
+          </div>
+
+          <h2 class="section-title">{{ $tr('Ready', '就绪') }}</h2>
+          <p class="section-desc">
+            {{ $tr('First simulation in ~10 min, ~$1 on the cloud preset. Drop in a doc or pick a trending headline to start.', '使用云端预设,首次模拟约 10 分钟、约 $1。投入一份文档或挑一条热门头条即可开始。') }}
+          </p>
+
+
+          <!-- What it does (from README) -->
+          <div class="steps-container">
+            <div class="steps-header">
+               <span class="diamond-icon">◇</span> {{ $tr('What it does', '它做什么') }}
+            </div>
+            <div class="workflow-list">
+              <div class="workflow-item">
+                <span class="step-num">01</span>
+                <div class="step-info">
+                  <div class="step-title">{{ $tr('You bring a scenario', '你提供一个情景') }}</div>
+                  <div class="step-desc">{{ $tr('MiroShark builds the world around it — extracts actors, stakes, and open questions from your input.', 'MiroShark 围绕它构建世界 — 从你的输入中提取角色、利害关系与待解问题。') }}</div>
+                </div>
+              </div>
+              <div class="workflow-item">
+                <span class="step-num">02</span>
+                <div class="step-info">
+                  <div class="step-title">{{ $tr('Hundreds of grounded agents', '数百个有据可依的智能体') }}</div>
+                  <div class="step-desc">{{ $tr('React on Twitter, Reddit, and a prediction market. Hour by hour, round after round.', '在 Twitter、Reddit 与预测市场上做出反应。每小时一轮,一轮接一轮。') }}</div>
+                </div>
+              </div>
+              <div class="workflow-item">
+                <span class="step-num">03</span>
+                <div class="step-info">
+                  <div class="step-title">{{ $tr('Steer the timeline', '掌舵时间线') }}</div>
+                  <div class="step-desc">{{ $tr('Chat with any agent. Drop breaking news mid-run. Fork a counterfactual and watch it diverge.', '与任意智能体对话。在运行中投入突发新闻。派生一个反事实分支并观察其偏离。') }}</div>
+                </div>
+              </div>
+              <div class="workflow-item">
+                <span class="step-num">04</span>
+                <div class="step-info">
+                  <div class="step-title">{{ $tr('Get a report', '生成报告') }}</div>
+                  <div class="step-desc">{{ $tr('A Substack-style write-up of what happened, citing actual posts and trades from the run.', 'Substack 风格的复盘文章,引用本次运行中的真实发帖与交易。') }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column: Interactive Console -->
+        <div class="right-panel">
+          <!-- Pre-fill banner — shown when a ?scenario= / ?url= / ?ask= link
+               populated the form on mount. Sits above the console so it's
+               obvious which fields were touched without obscuring the form
+               itself. Dismissible — once seen, get out of the way. -->
+          <div v-if="prefillBannerVisible" class="prefill-banner" role="status">
+            <span class="prefill-banner-icon">🔗</span>
+            <span class="prefill-banner-text">{{ prefillBannerCopy }}</span>
+            <button
+              class="prefill-banner-close"
+              :title="$tr('Dismiss', '关闭')"
+              @click="dismissPrefillBanner"
+            >×</button>
+          </div>
+
+          <div class="console-box">
+            <!-- Upload Area -->
+            <div class="console-section">
+              <div class="console-header">
+                <span class="console-label">{{ $tr('01 / Reality Seeds', '01 / 现实种子') }}</span>
+                <span class="console-meta">{{ $tr('Supported formats: PDF, MD, TXT', '支持格式:PDF、MD、TXT') }}</span>
+              </div>
+              
+              <div 
+                class="upload-zone"
+                :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0 }"
+                @dragover.prevent="handleDragOver"
+                @dragleave.prevent="handleDragLeave"
+                @drop.prevent="handleDrop"
+                @click="triggerFileInput"
+              >
+                <input
+                  ref="fileInput"
+                  type="file"
+                  multiple
+                  accept=".pdf,.md,.txt"
+                  @change="handleFileSelect"
+                  style="display: none"
+                  :disabled="loading"
+                />
+                
+                <div v-if="files.length === 0" class="upload-placeholder">
+                  <div class="upload-icon">↑</div>
+                  <div class="upload-title">{{ $tr('Drop Files to Upload', '拖入文件以上传') }}</div>
+                  <div class="upload-hint">{{ $tr('or click to browse the file system', '或点击浏览文件系统') }}</div>
+                </div>
+                
+                <div v-else class="file-list">
+                  <div v-for="(file, index) in files" :key="index" class="file-item">
+                    <span class="file-icon">📄</span>
+                    <span class="file-name">{{ file.name }}</span>
+                    <button @click.stop="removeFile(index)" class="remove-btn">×</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Ask Mode (no document needed) -->
+            <div class="console-section url-section">
+              <div class="console-header">
+                <span class="console-label">{{ $tr('01a / Just Ask', '01a / 直接提问') }}</span>
+                <span class="console-meta">{{ $tr('No document? Type a question, we synthesize a briefing.', '没有文档?输入一个问题,我们会合成一份简报。') }}</span>
+              </div>
+              <div class="url-input-row">
+                <input
+                  v-model="askQuestion"
+                  class="url-input"
+                  type="text"
+                  :placeholder="$tr(`e.g. Will the EU AI Act's biometrics clause survive the final trilogue?`, '例如:欧盟人工智能法案的生物识别条款能否在最终三方会议中存活?')"
+                  :disabled="loading || askBusy"
+                  @keydown.enter.prevent="runAskMode"
+                />
+                <button
+                  class="url-fetch-btn"
+                  @click="runAskMode"
+                  :disabled="!askQuestion.trim() || loading || askBusy"
+                >
+                  <span v-if="askBusy">...</span>
+                  <span v-else>{{ $tr('Research →', '研究 →') }}</span>
+                </button>
+              </div>
+              <div v-if="askError" class="url-error">{{ askError }}</div>
+              <div v-if="askBusy" class="url-doc-meta" style="margin-top:6px">{{ $tr('Synthesizing briefing — this uses the Smart model and takes ~20–30s.', '正在合成简报 — 使用 Smart 模型,大约需要 20–30 秒。') }}</div>
+              <div v-if="askDocs.length > 0" class="url-doc-list">
+                <div
+                  v-for="doc in askDocs"
+                  :key="doc.url"
+                  class="url-doc-item"
+                  role="button"
+                  tabindex="0"
+                  :title="$tr('Click to preview the generated briefing', '点击预览生成的简报')"
+                  @click="previewDoc = doc"
+                  @keydown.enter.prevent="previewDoc = doc"
+                  @keydown.space.prevent="previewDoc = doc"
+                >
+                  <span class="url-doc-icon">◈</span>
+                  <div class="url-doc-info">
+                    <div class="url-doc-title" :title="doc.title">{{ truncate(doc.title, 70) }}</div>
+                    <div class="url-doc-meta" :title="doc.url">{{ doc.char_count.toLocaleString() }} {{ $tr('chars', '字符') }} · {{ truncate(doc.url, 72) }}</div>
+                  </div>
+                  <button @click.stop="removeUrlDocByRef(doc)" class="remove-btn">×</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- URL Input Section -->
+            <div class="console-section url-section">
+              <div class="console-header">
+                <span class="console-label">{{ $tr('01b / URL Import', '01b / 网址导入') }}</span>
+                <span class="console-meta">{{ $tr('Paste article or report URL', '粘贴文章或报告网址') }}</span>
+              </div>
+              <div class="url-input-row">
+                <input
+                  v-model="urlInput"
+                  class="url-input"
+                  type="url"
+                  placeholder="https://example.com/article"
+                  :disabled="loading || urlFetching"
+                  @keydown.enter.prevent="fetchUrlDoc"
+                />
+                <button
+                  class="url-fetch-btn"
+                  @click="fetchUrlDoc"
+                  :disabled="!urlInput.trim() || loading || urlFetching"
+                >
+                  <span v-if="urlFetching">...</span>
+                  <span v-else>{{ $tr('Fetch →', '抓取 →') }}</span>
+                </button>
+              </div>
+              <div v-if="urlError" class="url-error">{{ urlError }}</div>
+              <div v-if="fetchedDocs.length > 0" class="url-doc-list">
+                <div
+                  v-for="doc in fetchedDocs"
+                  :key="doc.url"
+                  class="url-doc-item"
+                  role="button"
+                  tabindex="0"
+                  :title="$tr('Click to preview the extracted content', '点击预览提取的内容')"
+                  @click="previewDoc = doc"
+                  @keydown.enter.prevent="previewDoc = doc"
+                  @keydown.space.prevent="previewDoc = doc"
+                >
+                  <span class="url-doc-icon">◈</span>
+                  <div class="url-doc-info">
+                    <div class="url-doc-title" :title="doc.title">{{ truncate(doc.title, 70) }}</div>
+                    <div class="url-doc-meta" :title="doc.url">{{ doc.char_count.toLocaleString() }} {{ $tr('chars', '字符') }} · {{ truncate(doc.url, 72) }}</div>
+                  </div>
+                  <button @click.stop="removeUrlDocByRef(doc)" class="remove-btn">×</button>
+                </div>
+              </div>
+              <TrendingTopics
+                :busy="urlFetching"
+                @select="handleTrendingSelect"
+              />
+            </div>
+
+            <!-- Divider -->
+            <div class="console-divider">
+              <span>{{ $tr('Input Parameters', '输入参数') }}</span>
+            </div>
+
+            <!-- Input Area -->
+            <div class="console-section">
+              <div class="console-header">
+                <span class="console-label">{{ $tr('>_ 02 / Simulation Prompt', '>_ 02 / 模拟提示词') }}</span>
+              </div>
+              <ScenarioSuggestions
+                :text-preview="scenarioSuggestPreview"
+                :simulation-prompt="formData.simulationRequirement"
+                @use="handleSuggestionUse"
+              />
+              <div class="input-wrapper">
+                <textarea
+                  v-model="formData.simulationRequirement"
+                  class="code-input"
+                  :placeholder="$tr('// Enter your simulation or prediction requirements in natural language (e.g., If a university announces the revocation of a disciplinary action against a student, what public opinion trends will emerge?)', '// 用自然语言描述你的模拟或预测需求(例如:如果一所大学宣布撤销对一名学生的纪律处分,会出现哪些舆论走向?)')"
+                  rows="6"
+                  :disabled="loading"
+                ></textarea>
+                <div class="model-badge">{{ $tr('Engine: MiroShark-V1.0', '引擎:MiroShark-V1.0') }}</div>
+              </div>
+
+              <!-- Share-as-link — copy a URL that drops a reader into this
+                   exact pre-filled form. Visible once there's something
+                   worth sharing (scenario text, fetched URL doc, or ask
+                   question). The un-run-scenario counterpart to the
+                   "Fork this scenario" button on /watch and /share. -->
+              <div v-if="canShareScenarioLink" class="share-scenario-row">
+                <button
+                  class="share-scenario-btn"
+                  :class="{ copied: shareLinkCopied }"
+                  :title="$tr('Copy a URL that drops a reader into this pre-filled form', '复制可让读者直接进入此预填表单的链接')"
+                  @click="copyScenarioShareLink"
+                >
+                  <span class="share-scenario-icon">🔗</span>
+                  <span v-if="shareLinkCopied">{{ '✓ ' + $tr('Link copied', '链接已复制') }}</span>
+                  <span v-else>{{ $tr('Share as link', '分享为链接') }}</span>
+                </button>
+                <span class="share-scenario-hint">
+                  {{ $tr('Tweet this URL to invite anyone to run the same setup.', '发推此 URL,即可邀请他人运行相同设置。') }}
+                </span>
+              </div>
+              <div v-if="shareLinkError" class="share-scenario-error">{{ shareLinkError }}</div>
+            </div>
+
+            <!-- Start Button -->
+            <div class="console-section btn-section">
+              <button
+                class="start-engine-btn"
+                @click="startSimulation"
+                :disabled="!canSubmit || loading"
+              >
+                <span v-if="!loading">{{ $tr('Launch Simulation', '启动模拟') }}</span>
+                <span v-else>{{ $tr('Initializing...', '初始化中...') }}</span>
+                <span class="btn-arrow">→</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Quick Start Templates -->
+      <TemplateGallery />
+
+      <!-- History Project Database -->
+      <HistoryDatabase />
+
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import HistoryDatabase from '../components/HistoryDatabase.vue'
+import TemplateGallery from '../components/TemplateGallery.vue'
+import SettingsPanel from '../components/SettingsPanel.vue'
+import ScenarioSuggestions from '../components/ScenarioSuggestions.vue'
+import TrendingTopics from '../components/TrendingTopics.vue'
+import LocaleToggle from '../components/LocaleToggle.vue'
+import { fetchUrl } from '../api/graph'
+import { askMode } from '../api/simulation'
+import { getTemplate } from '../api/templates'
+import { setPendingTemplate } from '../store/pendingUpload'
+import {
+  readPrefilledParams,
+  hasAnyPrefill,
+  buildScenarioShareUrl,
+} from '../utils/urlParams'
+import { tr } from '../i18n'
+
+const settingsOpen = ref(false)
+const previewDoc = ref(null)
+
+const router = useRouter()
+const route = useRoute()
+
+// Pre-fill banner — shown when ?scenario= / ?url= / ?ask= dropped the user
+// here from a tweet or blog post and at least one field was populated. Stays
+// dismissible because seasoned operators don't need the affordance once
+// they've seen the form.
+const prefillBannerVisible = ref(false)
+const prefillBannerKind = ref('text') // 'text' | 'url' | 'ask' | 'mixed'
+
+// Toast for the "Share as link" copy button — same UX pattern as the embed
+// dialog's "Copy" toast (resets to default label after a beat).
+const shareLinkCopiedAt = ref(0)
+// Bumped after the toast window expires so the time-windowed `shareLinkCopied`
+// computed re-evaluates (it depends on Date.now(), which isn't reactive).
+const shareLinkCopiedTick = ref(0)
+const shareLinkError = ref('')
+
+// In-flight state for the ?template=<slug> auto-launch path. We hide the
+// page chrome while resolving so a slow API call doesn't render the empty
+// console for half a second before redirecting to /process/new.
+const templateAutoLaunching = ref(false)
+const templateAutoLaunchError = ref('')
+
+// Form data
+const formData = ref({
+  simulationRequirement: ''
+})
+
+// File list
+const files = ref([])
+
+// URL import state
+const urlInput = ref('')
+const urlDocs = ref([])   // [{title, url, text, char_count}]
+const urlFetching = ref(false)
+const urlError = ref('')
+
+// Ask-mode state — question-only pipeline
+const askQuestion = ref('')
+const askBusy = ref(false)
+const askError = ref('')
+
+// State
+const loading = ref(false)
+const error = ref('')
+const isDragOver = ref(false)
+
+// File input ref
+const fileInput = ref(null)
+
+// Computed: whether the form can be submitted
+const canSubmit = computed(() => {
+  return formData.value.simulationRequirement.trim() !== '' &&
+    (files.value.length > 0 || urlDocs.value.length > 0)
+})
+
+// Trigger file selection
+const triggerFileInput = () => {
+  if (!loading.value) {
+    fileInput.value?.click()
+  }
+}
+
+// Handle file selection
+const handleFileSelect = (event) => {
+  const selectedFiles = Array.from(event.target.files)
+  addFiles(selectedFiles)
+}
+
+// Handle drag-related events
+const handleDragOver = (e) => {
+  if (!loading.value) {
+    isDragOver.value = true
+  }
+}
+
+const handleDragLeave = (e) => {
+  isDragOver.value = false
+}
+
+const handleDrop = (e) => {
+  isDragOver.value = false
+  if (loading.value) return
+  
+  const droppedFiles = Array.from(e.dataTransfer.files)
+  addFiles(droppedFiles)
+}
+
+// Client-readable file previews (.md / .txt), keyed by File identity so we
+// don't re-read when the `files` array gets reordered. PDFs are skipped here
+// — their text is extracted server-side during graph build, so they simply
+// won't trigger scenario auto-suggest on their own. A .md/.txt sibling (or a
+// URL doc) will still drive suggestions.
+const filePreviewText = ref('')
+
+const refreshFilePreviewText = async () => {
+  const textish = files.value.filter(f => {
+    const ext = (f.name.split('.').pop() || '').toLowerCase()
+    return ext === 'md' || ext === 'txt'
+  })
+  if (textish.length === 0) {
+    filePreviewText.value = ''
+    return
+  }
+
+  try {
+    const chunks = await Promise.all(textish.map(async (f) => {
+      try {
+        // Only read the first ~6KB per file to keep the combined preview
+        // bounded. The backend further clamps to 2000 chars.
+        const slice = f.slice ? f.slice(0, 6000) : f
+        const txt = await slice.text()
+        return (txt || '').slice(0, 3000)
+      } catch (_) {
+        return ''
+      }
+    }))
+    filePreviewText.value = chunks.filter(Boolean).join('\n\n').slice(0, 6000)
+  } catch (_) {
+    filePreviewText.value = ''
+  }
+}
+
+// Add files
+const addFiles = (newFiles) => {
+  const validFiles = newFiles.filter(file => {
+    const ext = file.name.split('.').pop().toLowerCase()
+    return ['pdf', 'md', 'txt'].includes(ext)
+  })
+  files.value.push(...validFiles)
+  refreshFilePreviewText()
+}
+
+// Remove file
+const removeFile = (index) => {
+  files.value.splice(index, 1)
+  refreshFilePreviewText()
+}
+
+// Combined text preview handed to ScenarioSuggestions.  Includes every
+// fetched URL's extracted text plus any client-side-readable file text.
+// Kept to ~6KB on the client; the backend trims again.
+const scenarioSuggestPreview = computed(() => {
+  const urlChunks = (urlDocs.value || [])
+    .map(d => {
+      const head = d.title ? `# ${d.title}\n` : ''
+      const body = (d.text || '').slice(0, 3000)
+      return body ? head + body : ''
+    })
+    .filter(Boolean)
+
+  const combined = [...urlChunks]
+  if (filePreviewText.value) combined.push(filePreviewText.value)
+  return combined.join('\n\n').slice(0, 6000)
+})
+
+// User picked one of the 3 scenario cards — fill the textarea but don't
+// submit.  We overwrite whatever was there (including any earlier pick); if
+// the user had already typed a partial scenario they can undo with Ctrl+Z.
+const handleSuggestionUse = ({ question }) => {
+  if (!question) return
+  formData.value.simulationRequirement = question
+}
+
+// Scroll to bottom
+const scrollToBottom = () => {
+  window.scrollTo({
+    top: document.body.scrollHeight,
+    behavior: 'smooth'
+  })
+}
+
+// Fetch a URL and add it to urlDocs
+const fetchUrlDoc = async () => {
+  const url = urlInput.value.trim()
+  if (!url || urlFetching.value) return
+
+  // Prevent duplicate URLs
+  if (urlDocs.value.some(d => d.url === url)) {
+    urlError.value = tr('This URL has already been added.', '此网址已添加过。')
+    return
+  }
+
+  urlFetching.value = true
+  urlError.value = ''
+  try {
+    const res = await fetchUrl(url)
+    if (res.success) {
+      urlDocs.value.push(res.data)
+      urlInput.value = ''
+    } else {
+      urlError.value = res.error || tr('Failed to fetch URL.', '抓取网址失败。')
+    }
+  } catch (err) {
+    urlError.value = err.message || tr('Failed to fetch URL.', '抓取网址失败。')
+  } finally {
+    urlFetching.value = false
+  }
+}
+
+// Ask mode: ask → synthesized briefing becomes a url_doc; we also prefill the
+// simulation_requirement textarea with the LLM's framing. Rest of the flow is
+// unchanged.
+const runAskMode = async () => {
+  const q = askQuestion.value.trim()
+  if (!q || askBusy.value) return
+  askBusy.value = true
+  askError.value = ''
+  try {
+    const res = await askMode(q)
+    if (!res.success) {
+      askError.value = res.error || tr('Ask mode failed.', '提问模式失败。')
+      return
+    }
+    const d = res.data
+    const synthUrl = `miroshark://ask/${encodeURIComponent(q.slice(0, 64))}`
+    // Don't duplicate if re-run.
+    const idx = urlDocs.value.findIndex(x => x.url === synthUrl)
+    const payload = {
+      title: d.title,
+      url: synthUrl,
+      text: d.seed_document,
+      char_count: (d.seed_document || '').length,
+    }
+    if (idx >= 0) urlDocs.value.splice(idx, 1, payload)
+    else urlDocs.value.push(payload)
+    if (!formData.value.simulationRequirement) {
+      formData.value.simulationRequirement = d.simulation_requirement
+    }
+    askQuestion.value = ''
+  } catch (err) {
+    askError.value = err?.response?.data?.error || err?.message || tr('Ask mode failed.', '提问模式失败。')
+  } finally {
+    askBusy.value = false
+  }
+}
+
+// User picked a "What's Trending" card — push the URL into the input and
+// reuse the existing fetch pipeline. ScenarioSuggestions already watches
+// urlDocs and will fire once the fetched doc lands, so the user goes from
+// blank-page to three scenario cards in one click.
+const handleTrendingSelect = ({ url }) => {
+  if (!url || urlFetching.value) return
+  if (urlDocs.value.some(d => d.url === url)) {
+    urlError.value = tr('This URL is already loaded.', '此网址已加载。')
+    return
+  }
+  urlInput.value = url
+  urlError.value = ''
+  fetchUrlDoc()
+}
+
+// Remove a URL document from the list
+const removeUrlDoc = (index) => {
+  urlDocs.value.splice(index, 1)
+}
+
+const removeUrlDocByRef = (doc) => {
+  const idx = urlDocs.value.indexOf(doc)
+  if (idx >= 0) urlDocs.value.splice(idx, 1)
+}
+
+// Hard-cap display strings so long titles / deep URLs can't widen the
+// doc-list row (CSS ellipsis can fail when intermediate flex ancestors
+// don't propagate min-width:0).
+const truncate = (s, max) => {
+  if (!s) return ''
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s
+}
+
+// Split docs by origin — Ask-synthesized briefings show under Just Ask,
+// real URL fetches show under URL Import.
+const askDocs = computed(() =>
+  urlDocs.value.filter(d => typeof d.url === 'string' && d.url.startsWith('miroshark://ask/'))
+)
+const fetchedDocs = computed(() =>
+  urlDocs.value.filter(d => !(typeof d.url === 'string' && d.url.startsWith('miroshark://ask/')))
+)
+
+// Start simulation - navigate immediately, API calls happen on the Process page
+const startSimulation = () => {
+  if (!canSubmit.value || loading.value) return
+
+  // Store data pending upload
+  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
+    setPendingUpload(files.value, formData.value.simulationRequirement, urlDocs.value)
+
+    // Navigate immediately to Process page (using special identifier for new project)
+    router.push({
+      name: 'Process',
+      params: { projectId: 'new' }
+    })
+  })
+}
+
+// ── Pre-filled scenario links ───────────────────────────────────────────
+// `/?scenario=...&url=...&ask=...` drops the reader directly into a
+// pre-configured New Sim form. `/?template=<slug>` is the auto-launch
+// equivalent for one of the preset templates (matches what clicking the
+// gallery launch button does).
+
+const dismissPrefillBanner = () => {
+  prefillBannerVisible.value = false
+}
+
+const prefillBannerCopy = computed(() => {
+  switch (prefillBannerKind.value) {
+    case 'url':
+      return tr(
+        'Document pre-filled from a shared link — review the scenario below before launching.',
+        '已通过分享链接预填文档 — 启动前请检查下方情景设置。',
+      )
+    case 'ask':
+      return tr(
+        'Question pre-filled from a shared link — click Research to synthesize the briefing, or edit the question first.',
+        '已通过分享链接预填问题 — 点击「研究」合成简报,或先修改问题。',
+      )
+    case 'mixed':
+      return tr(
+        'Scenario, document, and question pre-filled from a shared link — review the form below before launching.',
+        '情景、文档与问题均已通过分享链接预填 — 启动前请检查下方表单。',
+      )
+    default:
+      return tr(
+        'Scenario pre-filled from a shared link — review the form below before launching.',
+        '已通过分享链接预填情景 — 启动前请检查下方表单。',
+      )
+  }
+})
+
+const autoLaunchTemplate = async (slug) => {
+  templateAutoLaunching.value = true
+  templateAutoLaunchError.value = ''
+  try {
+    const res = await getTemplate(slug)
+    if (!res?.success || !res.data) {
+      templateAutoLaunchError.value = tr(
+        `Couldn't load that template. The link may be stale.`,
+        '无法加载该模板。链接可能已失效。',
+      )
+      return
+    }
+    const full = res.data
+    setPendingTemplate(
+      full.simulation_requirement,
+      full.seed_document,
+      full.name,
+    )
+    router.push({ name: 'Process', params: { projectId: 'new' } })
+  } catch (err) {
+    templateAutoLaunchError.value =
+      err?.response?.data?.error ||
+      err?.message ||
+      tr(
+        `Couldn't load that template. The link may be stale.`,
+        '无法加载该模板。链接可能已失效。',
+      )
+  } finally {
+    templateAutoLaunching.value = false
+  }
+}
+
+const applyPrefilledParams = async () => {
+  const params = readPrefilledParams(route.query || {})
+  if (!hasAnyPrefill(params)) return
+
+  // Strip the params off the URL so a refresh / back-button doesn't replay
+  // the pre-fill (and so a copy-paste of the address bar after editing the
+  // form is the user's edited state, not the original shared link).
+  router.replace({ path: '/', query: {} })
+
+  if (params.template) {
+    autoLaunchTemplate(params.template)
+    return
+  }
+
+  let touched = []
+  if (params.scenario && !formData.value.simulationRequirement) {
+    formData.value.simulationRequirement = params.scenario
+    touched.push('scenario')
+  }
+  if (params.ask && !askQuestion.value) {
+    askQuestion.value = params.ask
+    touched.push('ask')
+  }
+  if (params.url) {
+    const dup = urlDocs.value.some((d) => d.url === params.url)
+    if (!dup) {
+      urlInput.value = params.url
+      // Wait for the next tick so the input change is observed before fetch
+      // — keeps the network call colocated with the visible input value if
+      // the user opens devtools to debug a slow fetch.
+      await nextTick()
+      fetchUrlDoc()
+      touched.push('url')
+    }
+  }
+
+  if (touched.length === 0) return
+
+  if (touched.length >= 2) prefillBannerKind.value = 'mixed'
+  else if (touched[0] === 'url') prefillBannerKind.value = 'url'
+  else if (touched[0] === 'ask') prefillBannerKind.value = 'ask'
+  else prefillBannerKind.value = 'text'
+  prefillBannerVisible.value = true
+}
+
+onMounted(() => {
+  applyPrefilledParams()
+})
+
+// Construct a `?scenario=...&url=...&ask=...` URL from the live form state
+// and copy it to the clipboard. Visible whenever there's enough content to
+// produce a meaningful share link — the un-run-scenario counterpart to the
+// "Fork this scenario" button on /watch and /share pages.
+const canShareScenarioLink = computed(() => {
+  return Boolean(
+    formData.value.simulationRequirement.trim() ||
+      urlDocs.value.length > 0 ||
+      askQuestion.value.trim(),
+  )
+})
+
+const buildLiveShareUrl = () => {
+  // Only the first fetched URL doc travels with the link — multi-doc setups
+  // are advanced and rare; copy-paste the additional URLs separately.
+  const firstHttpDoc = urlDocs.value.find(
+    (d) => typeof d.url === 'string' && /^https?:\/\//i.test(d.url),
+  )
+  return buildScenarioShareUrl({
+    scenario: formData.value.simulationRequirement,
+    url: firstHttpDoc ? firstHttpDoc.url : '',
+    ask: askQuestion.value,
+  })
+}
+
+const shareLinkCopied = computed(() => {
+  // Touch the tick ref so the computed re-runs when the toast window expires.
+  void shareLinkCopiedTick.value
+  return shareLinkCopiedAt.value > 0 && Date.now() - shareLinkCopiedAt.value < 2200
+})
+
+const copyScenarioShareLink = async () => {
+  shareLinkError.value = ''
+  if (!canShareScenarioLink.value) return
+  const url = buildLiveShareUrl()
+  try {
+    await navigator.clipboard.writeText(url)
+    shareLinkCopiedAt.value = Date.now()
+    setTimeout(() => {
+      // Re-evaluate `shareLinkCopied` once the toast window expires.
+      shareLinkCopiedTick.value++
+    }, 2300)
+  } catch (err) {
+    shareLinkError.value =
+      err?.message || tr('Copy failed — long-press the link to copy manually.', '复制失败 — 长按链接手动复制。')
+  }
+}
+
+</script>
+
+<style scoped>
+/* ═══════════════════════════════════════════════════════════
+   HOME — Hyperstitions Design System applied
+   ═══════════════════════════════════════════════════════════ */
+
+.home-container {
+  min-height: 100vh;
+  background: var(--background);
+  font-family: var(--font-display);
+  color: var(--foreground);
+}
+
+/* ── Top Navigation ── */
+.navbar {
+  height: var(--space-xl);
+  background: var(--color-black);
+  color: var(--color-white);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 var(--space-lg);
+}
+
+.nav-brand {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 3px;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.explore-link {
+  color: var(--color-white);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  transition: var(--transition-fast);
+  opacity: 0.6;
+}
+
+.explore-link:hover { opacity: 1; color: var(--color-orange); }
+
+.compass { font-size: 15px; line-height: 1; }
+
+.github-link {
+  color: var(--color-white);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  transition: var(--transition-fast);
+  opacity: 0.6;
+}
+
+.github-link:hover { opacity: 1; }
+
+.arrow { font-family: sans-serif; }
+
+.settings-btn {
+  background: none;
+  border: none;
+  color: rgba(250,250,250,0.5);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 0 0 var(--space-md);
+  line-height: 1;
+  transition: var(--transition-fast);
+}
+
+.settings-btn:hover { color: var(--color-orange); }
+
+/* ── Main Content ── */
+.main-content {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-2xl) var(--space-lg);
+}
+
+/* ── Hero Section ── */
+.hero-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: var(--space-2xl);
+  position: relative;
+}
+
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.orange-tag {
+  background: var(--color-orange);
+  color: var(--color-white);
+  padding: 4px var(--space-sm);
+  font-weight: 700;
+  letter-spacing: 3px;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.main-title {
+  font-family: var(--font-display);
+  font-size: 50px;
+  line-height: 1.25;
+  font-weight: 400;
+  margin: 0 0 var(--space-lg) 0;
+  letter-spacing: -1px;
+  color: var(--foreground);
+}
+
+.gradient-text {
+  color: var(--color-orange);
+  -webkit-text-fill-color: var(--color-orange);
+  display: inline;
+}
+
+.hero-desc {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.5;
+  color: rgba(10,10,10,0.7);
+  max-width: 640px;
+  margin-bottom: var(--space-xl);
+}
+
+.hero-desc p { margin-bottom: var(--space-md); }
+
+.highlight-bold {
+  color: var(--foreground);
+  font-weight: 400;
+}
+
+.highlight-orange {
+  color: var(--color-orange);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.highlight-code {
+  background: rgba(10,10,10,0.05);
+  padding: 2px var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--foreground);
+}
+
+.slogan-text {
+  font-family: var(--font-display);
+  font-size: 25px;
+  line-height: 1.5;
+  color: var(--foreground);
+  border-left: var(--border-orange);
+  padding-left: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.blinking-cursor {
+  color: var(--color-green);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.decoration-square {
+  width: var(--space-sm);
+  height: var(--space-sm);
+  background: var(--color-green);
+  margin-top: var(--space-md);
+}
+
+.scroll-down-btn {
+  margin-top: var(--space-md);
+  width: var(--space-lg);
+  height: var(--space-lg);
+  border: var(--border-medium);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--color-orange);
+  font-size: 1.2rem;
+  transition: var(--transition-fast);
+}
+
+.scroll-down-btn:hover {
+  border-color: var(--color-orange);
+}
+
+/* ── Warning Stripe Divider ── */
+.dashboard-section::before {
+  content: '';
+  display: block;
+  height: 7px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--color-orange),
+    var(--color-orange) 11px,
+    var(--background) 11px,
+    var(--background) 22px
+  );
+  margin-bottom: var(--space-xl);
+}
+
+/* ── Dashboard Section ── */
+.dashboard-section {
+  display: flex;
+  gap: var(--space-xl);
+  padding-top: 0;
+  align-items: flex-start;
+}
+
+.dashboard-section .left-panel,
+.dashboard-section .right-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Left Panel ── */
+.left-panel { flex: 0.8; }
+
+.panel-header {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: rgba(10,10,10,0.4);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.status-dot {
+  color: var(--color-green);
+  font-size: 0.8rem;
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: 34px;
+  font-weight: 400;
+  margin: 0 0 var(--space-sm) 0;
+}
+
+.section-desc {
+  color: rgba(10,10,10,0.5);
+  font-family: var(--font-display);
+  font-size: 22px;
+  margin-bottom: var(--space-md);
+  line-height: 1.5;
+}
+
+/* ── Metric Cards ── */
+.metrics-row {
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.metric-card {
+  border: var(--border-light);
+  padding: var(--space-md) var(--space-lg);
+  min-width: 150px;
+  transition: var(--transition-fast);
+}
+
+.metric-card:hover { border-color: var(--color-orange); }
+
+.metric-value {
+  font-family: var(--font-display);
+  font-size: 31px;
+  margin-bottom: var(--space-xs);
+}
+
+.metric-label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: rgba(10,10,10,0.4);
+  letter-spacing: 1px;
+}
+
+/* ── Workflow Steps ── */
+.steps-container {
+  border: var(--border-light);
+  padding: var(--space-lg);
+  position: relative;
+}
+
+/* Corner markers */
+.steps-container::before,
+.steps-container::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+.steps-container::before {
+  top: 12px; left: 12px;
+  border-top: 3px solid var(--color-orange);
+  border-left: 3px solid var(--color-orange);
+}
+.steps-container::after {
+  bottom: 12px; right: 12px;
+  border-bottom: 3px solid var(--color-green);
+  border-right: 3px solid var(--color-green);
+}
+
+.steps-header {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: rgba(10,10,10,0.4);
+  margin-bottom: var(--space-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.diamond-icon {
+  color: var(--color-orange);
+  font-size: 1.2rem;
+}
+
+.workflow-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.workflow-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.step-num {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--color-orange);
+  opacity: 0.5;
+}
+
+.step-info { flex: 1; }
+
+.step-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  margin-bottom: 4px;
+}
+
+.step-desc {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: rgba(10,10,10,0.4);
+  line-height: 1.6;
+}
+
+/* ── Right Console ── */
+.right-panel { flex: 1.2; }
+
+.console-box {
+  border: var(--border-medium);
+  padding: var(--space-xs);
+  position: relative;
+}
+
+/* Console corner markers */
+.console-box::before,
+.console-box::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+.console-box::before {
+  top: -2px; right: -2px;
+  border-top: 3px solid var(--color-orange);
+  border-right: 3px solid var(--color-orange);
+}
+.console-box::after {
+  bottom: -2px; left: -2px;
+  border-bottom: 3px solid var(--color-green);
+  border-left: 3px solid var(--color-green);
+}
+
+.console-section { padding: var(--space-md); }
+.console-section.btn-section { padding-top: 0; }
+
+.console-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: rgba(10,10,10,0.4);
+  letter-spacing: 1px;
+}
+
+.console-label { text-transform: uppercase; }
+.console-meta { font-size: 11px; }
+
+/* ── Upload Zone ── */
+.upload-zone {
+  border: 2px dashed rgba(10,10,10,0.12);
+  height: 200px;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-medium);
+  background: var(--color-gray);
+}
+
+.upload-zone.has-files { align-items: flex-start; }
+
+.upload-zone:hover {
+  border-color: var(--color-orange);
+  background: var(--background);
+}
+
+.upload-zone.drag-over {
+  border-color: var(--color-green);
+  background: rgba(67,193,101,0.05);
+}
+
+.upload-placeholder { text-align: center; }
+
+.upload-icon {
+  width: var(--space-lg);
+  height: var(--space-lg);
+  border: var(--border-medium);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto var(--space-sm);
+  color: var(--color-orange);
+  font-size: 1.2rem;
+}
+
+.upload-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  margin-bottom: var(--space-xs);
+}
+
+.upload-hint {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: rgba(10,10,10,0.35);
+}
+
+/* ── File List ── */
+.file-list {
+  width: 100%;
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  background: var(--background);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--border-light);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.file-name { flex: 1; margin: 0 var(--space-sm); }
+
+.remove-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  color: rgba(10,10,10,0.35);
+  transition: var(--transition-fast);
+}
+
+.remove-btn:hover { color: var(--color-red); }
+
+/* ── Console Divider ── */
+.console-divider {
+  display: flex;
+  align-items: center;
+  margin: var(--space-sm) 0;
+}
+
+.console-divider::before,
+.console-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(10,10,10,0.08);
+}
+
+.console-divider span {
+  padding: 0 var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(10,10,10,0.25);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+/* ── Text Input ── */
+.input-wrapper {
+  position: relative;
+  border: var(--border-light);
+  background: var(--color-gray);
+  transition: var(--transition-fast);
+}
+
+.input-wrapper:focus-within {
+  border-color: var(--color-orange);
+}
+
+.code-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  min-height: 150px;
+  color: var(--foreground);
+}
+
+.code-input::placeholder {
+  color: rgba(10,10,10,0.35);
+}
+
+.model-badge {
+  position: absolute;
+  bottom: var(--space-xs);
+  right: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(10,10,10,0.25);
+  letter-spacing: 1px;
+}
+
+/* ── Launch Button ── */
+.start-engine-btn {
+  width: 100%;
+  background: var(--color-black);
+  color: var(--color-white);
+  border: 2px solid var(--color-black);
+  padding: 20px var(--space-lg);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  position: relative;
+  overflow: hidden;
+}
+
+.start-engine-btn:not(:disabled) {
+  animation: btn-pulse 2s ease-in-out infinite;
+}
+
+.start-engine-btn:hover:not(:disabled) {
+  background: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
+.start-engine-btn:active:not(:disabled) {
+  opacity: 0.9;
+}
+
+.start-engine-btn:disabled {
+  background: var(--color-gray);
+  color: rgba(10,10,10,0.35);
+  cursor: not-allowed;
+  border-color: rgba(10,10,10,0.08);
+}
+
+@keyframes btn-pulse {
+  0%, 100% { border-color: var(--color-black); }
+  50% { border-color: var(--color-orange); }
+}
+
+/* ── URL Import Section ── */
+.url-section {
+  padding-top: 0;
+}
+
+.url-input-row {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.url-input {
+  flex: 1;
+  border: var(--border-light);
+  background: var(--color-gray);
+  padding: var(--space-xs) var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--foreground);
+  outline: none;
+  transition: var(--transition-fast);
+  min-width: 0;
+}
+
+.url-input:focus {
+  border-color: var(--color-orange);
+  background: var(--background);
+}
+
+.url-input::placeholder {
+  color: rgba(10,10,10,0.3);
+}
+
+.url-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.url-fetch-btn {
+  background: var(--color-black);
+  color: var(--color-white);
+  border: 2px solid var(--color-black);
+  padding: var(--space-xs) var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  white-space: nowrap;
+}
+
+.url-fetch-btn:hover:not(:disabled) {
+  background: var(--color-orange);
+  border-color: var(--color-orange);
+}
+
+.url-fetch-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.url-error {
+  margin-top: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-red);
+}
+
+.url-doc-list {
+  margin-top: var(--space-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.url-doc-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  background: var(--background);
+  padding: var(--space-xs) var(--space-sm);
+  border: var(--border-light);
+  border-left: 3px solid var(--color-green);
+  cursor: pointer;
+  transition: background 0.1s, border-left-color 0.1s;
+}
+.url-doc-item:hover,
+.url-doc-item:focus-visible {
+  background: rgba(67, 193, 101, 0.06);
+  border-left-color: var(--color-orange);
+  outline: none;
+}
+
+.url-doc-icon {
+  color: var(--color-green);
+  font-size: 14px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.url-doc-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.url-doc-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.url-doc-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(10,10,10,0.35);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Footer ── */
+.attribution-footer {
+  text-align: center;
+  padding: var(--space-lg) 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: rgba(10,10,10,0.25);
+  letter-spacing: 1px;
+}
+
+.attribution-footer a {
+  color: rgba(10,10,10,0.4);
+  text-decoration: none;
+}
+
+.attribution-footer a:hover {
+  color: var(--color-orange);
+}
+
+/* ── Doc Preview Modal ── */
+.doc-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 10, 0.65);
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  animation: doc-preview-fade 0.12s ease-out;
+}
+@keyframes doc-preview-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.doc-preview-modal {
+  background: #FAFAFA;
+  width: 760px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid rgba(10,10,10,0.12);
+  font-family: 'Space Mono', 'Courier New', monospace;
+}
+.doc-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #0A0A0A;
+  color: #FAFAFA;
+}
+.doc-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-preview-icon { color: #43C165; flex-shrink: 0; }
+.doc-preview-close {
+  background: none;
+  border: none;
+  color: rgba(250,250,250,0.6);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+.doc-preview-close:hover { color: #FAFAFA; }
+.doc-preview-warning {
+  height: 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    #FF6B1A,
+    #FF6B1A 10px,
+    #FAFAFA 10px,
+    #FAFAFA 20px
+  );
+}
+.doc-preview-meta {
+  padding: 12px 20px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: rgba(10,10,10,0.45);
+  border-bottom: 2px solid rgba(10,10,10,0.08);
+  overflow-wrap: anywhere;
+}
+.doc-preview-meta-sep { margin: 0 6px; }
+.doc-preview-url { color: #FF6B1A; }
+.doc-preview-body {
+  margin: 0;
+  padding: 18px 20px;
+  flex: 1;
+  overflow-y: auto;
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #0A0A0A;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #FAFAFA;
+}
+
+/* ── Pre-fill banner (?scenario / ?url / ?ask) ── */
+.prefill-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-sm);
+  background: rgba(255, 107, 26, 0.08);
+  border-left: 3px solid var(--color-orange);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
+.prefill-banner-icon {
+  font-size: 14px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.prefill-banner-text {
+  flex: 1;
+}
+
+.prefill-banner-close {
+  background: none;
+  border: none;
+  color: rgba(10, 10, 10, 0.4);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: var(--transition-fast);
+}
+
+.prefill-banner-close:hover {
+  color: var(--color-orange);
+}
+
+/* ── Template auto-launch indicators (?template=<slug>) ── */
+.prefill-template-loading,
+.prefill-template-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.5px;
+  background: var(--color-black);
+  color: var(--color-white);
+}
+
+.prefill-template-loading-dot {
+  color: var(--color-orange);
+  animation: blink 1s step-end infinite;
+}
+
+.prefill-template-error {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--color-red);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.3);
+  justify-content: space-between;
+}
+
+.prefill-template-error-close {
+  background: none;
+  border: none;
+  color: rgba(239, 68, 68, 0.6);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 var(--space-xs);
+}
+
+.prefill-template-error-close:hover {
+  color: var(--color-red);
+}
+
+/* ── Share scenario as link ── */
+.share-scenario-row {
+  margin-top: var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.share-scenario-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: transparent;
+  color: var(--foreground);
+  border: 1px solid rgba(10, 10, 10, 0.18);
+  padding: 6px var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.share-scenario-btn:hover {
+  border-color: var(--color-orange);
+  color: var(--color-orange);
+}
+
+.share-scenario-btn.copied {
+  border-color: var(--color-green);
+  color: var(--color-green);
+}
+
+.share-scenario-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.share-scenario-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(10, 10, 10, 0.4);
+  line-height: 1.4;
+}
+
+.share-scenario-error {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-red);
+}
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .dashboard-section { flex-direction: column; }
+  .main-title { font-size: 34px; }
+}
+
+@media (max-width: 640px) {
+  .share-scenario-row { gap: var(--space-xs); }
+  .share-scenario-hint { display: none; }
+}
+</style>
