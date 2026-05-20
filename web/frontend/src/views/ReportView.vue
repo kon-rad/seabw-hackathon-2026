@@ -67,6 +67,30 @@
       </div>
     </main>
 
+    <!-- Polymarket recommendation banner -->
+    <div v-if="pmResult && pmResult.status === 'completed'" class="pm-recommendation-banner" :class="'banner-' + pmResult.recommendation.toLowerCase()">
+      <div class="banner-verdict">
+        BET {{ pmResult.recommendation }}
+        <span class="banner-confidence">{{ pmResult.confidence }}</span>
+      </div>
+      <div class="banner-prices">
+        <span>Swarm: {{ (pmResult.swarm_price * 100).toFixed(1) }}%</span>
+        <span class="banner-sep">·</span>
+        <span>Market: {{ (pmResult.market_price * 100).toFixed(1) }}%</span>
+        <span class="banner-sep">·</span>
+        <span :class="pmResult.edge > 0 ? 'edge-pos' : 'edge-neg'">
+          Edge: {{ pmResult.edge > 0 ? '+' : '' }}{{ (pmResult.edge * 100).toFixed(1) }}%
+        </span>
+      </div>
+      <div class="banner-reasoning">{{ pmResult.reasoning }}</div>
+    </div>
+    <div v-else-if="pmResult && pmResult.status !== 'completed'" class="pm-recommendation-banner banner-pending">
+      <div class="banner-verdict">Simulation {{ pmResult.status }}…</div>
+      <div v-if="pmResult.progress_percent" class="banner-prices">
+        Progress: {{ pmResult.progress_percent }}%
+      </div>
+    </div>
+
     <!-- Polymarket bet panel (floats bottom-right if a market context is stored) -->
     <BetPanel />
   </div>
@@ -84,6 +108,7 @@ import { tr } from '../i18n'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
+import api from '../api/index.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -229,9 +254,22 @@ watchEffect(() => {
 
 onUnmounted(() => { document.title = 'MiroShark' })
 
-onMounted(() => {
+const pmResult = ref(null)
+
+onMounted(async () => {
   addLog('ReportView initialized')
   loadReportData()
+
+  try {
+    const raw = sessionStorage.getItem('polymarket_context')
+    if (!raw) return
+    const ctx = JSON.parse(raw)
+    if (!ctx.project_id) return
+    const res = await api.get(`/api/polymarket/simulate/${ctx.project_id}/result`)
+    pmResult.value = res   // axios interceptor unwraps response.data
+  } catch (e) {
+    console.warn('Could not load Polymarket result:', e)
+  }
 })
 </script>
 
@@ -374,5 +412,59 @@ onMounted(() => {
 
 .panel-wrapper.left {
   border-right: 2px solid rgba(10,10,10,0.08);
+}
+
+.pm-recommendation-banner {
+  margin: 16px 24px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  border: 2px solid;
+  font-family: 'Courier New', monospace;
+}
+
+.banner-yes { border-color: #4ade80; background: #0f2a1a; }
+.banner-no  { border-color: #f87171; background: #2a0f0f; }
+.banner-neutral { border-color: #888; background: #1a1a1a; }
+.banner-pending { border-color: #facc15; background: #2a2010; }
+
+.banner-verdict {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.banner-yes .banner-verdict { color: #4ade80; }
+.banner-no  .banner-verdict { color: #f87171; }
+.banner-neutral .banner-verdict { color: #888; }
+.banner-pending .banner-verdict { color: #facc15; }
+
+.banner-confidence {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.1);
+  letter-spacing: 1px;
+}
+
+.banner-prices {
+  font-size: 14px;
+  color: #aaa;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.banner-sep { color: #444; }
+.edge-pos { color: #4ade80; font-weight: 700; }
+.edge-neg { color: #f87171; font-weight: 700; }
+
+.banner-reasoning {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
 }
 </style>
