@@ -3,6 +3,7 @@ Polymarket integration: market discovery, research agent, bet placement.
 """
 
 import os
+import re
 import json
 import time
 import traceback
@@ -349,8 +350,8 @@ def save_simulation_context():
     """Store Polymarket market context alongside a MiroShark project_id."""
     data = request.get_json(force=True)
     project_id = data.get("project_id")
-    if not project_id or not project_id.startswith("proj_"):
-        return jsonify({"success": False, "error": "project_id required"}), 400
+    if not project_id or not re.fullmatch(r'proj_[a-zA-Z0-9]{1,64}', project_id):
+        return jsonify({"success": False, "error": "Invalid or missing project_id"}), 400
 
     from ..models.project import ProjectManager
     project = ProjectManager.get_project(project_id)
