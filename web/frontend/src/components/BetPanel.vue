@@ -62,14 +62,15 @@
 
     <div v-if="placed" class="bet-success">
       <div class="success-icon">✓</div>
-      <div class="success-title">Bet placed on Polygon</div>
+      <div class="success-title">Limit order submitted</div>
       <div class="success-detail">Order ID: {{ orderId }}</div>
+      <div class="success-note">Off-chain CLOB order — fills when market crosses your price.</div>
       <a
         :href="`https://polymarket.com/event/${context.condition_id}`"
         target="_blank"
         class="poly-link"
       >
-        View on Polymarket ↗
+        Track on Polymarket ↗
       </a>
     </div>
   </div>
@@ -299,4 +300,11 @@ onMounted(() => {
   margin-top: 4px;
 }
 .poly-link:hover { text-decoration: underline; }
+
+.success-note {
+  font-size: 10px;
+  color: #555;
+  text-align: center;
+  line-height: 1.4;
+}
 </style>
