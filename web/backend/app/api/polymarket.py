@@ -342,3 +342,34 @@ def place_bet():
     except Exception as e:
         logger.error(f"Bet placement failed: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@polymarket_bp.route("/simulate/context", methods=["POST"])
+def save_simulation_context():
+    """Store Polymarket market context alongside a MiroShark project_id."""
+    data = request.get_json(force=True)
+    project_id = data.get("project_id")
+    if not project_id:
+        return jsonify({"success": False, "error": "project_id required"}), 400
+
+    from ..models.project import ProjectManager
+    project = ProjectManager.get_project(project_id)
+    if not project:
+        return jsonify({"success": False, "error": f"Project not found: {project_id}"}), 404
+
+    ctx = {
+        "market_id": data.get("market_id", ""),
+        "condition_id": data.get("condition_id", ""),
+        "title": data.get("title", ""),
+        "yes_price": float(data.get("yes_price", 0.5)),
+        "resolution_date": data.get("resolution_date", ""),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    project_dir = Path(ProjectManager._get_project_dir(project_id))
+    (project_dir / "polymarket_context.json").write_text(
+        json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    logger.info(f"Saved polymarket context for project {project_id}: {ctx['title']}")
+    return jsonify({"success": True, "project_id": project_id})
