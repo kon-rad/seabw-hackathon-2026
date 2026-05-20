@@ -1,106 +1,177 @@
 # MiroShark × Polymarket
 
-**AI-powered prediction market scout.** Finds the best Polymarket bets, runs deep research, simulates outcomes with a 100-agent swarm, and places the trade on Polygon mainnet — automatically.
+> AI-powered prediction market scout — finds the best bets, researches them, simulates outcomes with a 100-agent swarm, and places the trade on Polygon mainnet.
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Node 18+](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org/)
+[![Built at SEABW 2026](https://img.shields.io/badge/built%20at-SEABW%202026-orange.svg)]()
 
 ---
 
-## The Problem
+## What It Does
 
-Prediction markets are one of the most information-dense environments on the internet. Polymarket alone processes hundreds of millions of dollars in volume on questions about politics, crypto, science, and world events. The crowd is smart — but it isn't omniscient.
+Prediction markets misprice events. When they do, there's an edge. Finding that edge requires continuously monitoring markets, running deep research, and synthesizing it into a probability estimate — faster than the market corrects.
 
-**Edges exist.** Markets misprice events all the time — when news breaks slowly, when expert analysis is buried in obscure sources, when the crowd anchors to narrative instead of data. Finding those edges is the hard part. It requires:
+**MiroShark × Polymarket does this automatically:**
 
-- Continuously monitoring dozens of live markets
-- Running deep research across news, statistics, and expert opinion
-- Synthesizing that research into a coherent probability estimate
-- Acting before the market corrects
+1. **Scout** — fetches live Polymarket markets, scores them for AI-researchability (volume, topic, price inefficiency, time to resolution)
+2. **Research** — a 4-round web agent digs into the market: news, statistics, expert analysis, key entities — compiling a structured seed document
+3. **Simulate** — MiroShark spawns 100+ AI agents with distinct personas who read the research, argue, post, trade, and update beliefs round by round
+4. **Bet** — when the swarm price diverges from the market price, one click places a limit order on the Polymarket CLOB on Polygon mainnet
 
-No individual can do this at scale. Most people bet on gut instinct. The ones who win systematically are running quantitative research operations. Everyone else is just donating to them.
-
-**MiroShark × Polymarket closes that gap.**
+**Cost per run:** research is free (Llama 3.3 70B free tier); simulation is ~$0.10–0.30.
 
 ---
 
-## How It Works
+## Architecture
 
-**1. Scout**
-The app fetches live Polymarket markets and scores each one for AI-researchability — weighting topic category, liquidity, description richness, time to resolution, and current price inefficiency. The top 8 are surfaced in real time.
-
-**2. Research**
-A 4-round AI research agent digs into the selected market. Each round hits the web with a targeted query — latest news, historical statistics, expert analysis, key entity relationships. It extracts facts, sentiment signals, and statistical evidence, building a structured seed document that captures everything knowable about the outcome.
-
-**3. Simulate**
-MiroShark's swarm engine spawns 100+ AI agents — each with a distinct persona, belief system, and risk tolerance. They read the research, argue about the outcome, post takes, place trades, and update their beliefs as the simulation runs. The swarm converges on a consensus probability the same way a real crowd does — except it runs in minutes instead of days, and it's grounded in the research document rather than social noise.
-
-**4. Bet**
-When the swarm price diverges from the market price by a meaningful edge, the app surfaces the recommendation with a confidence rating. One click places a limit order on the Polymarket CLOB via your Polygon wallet. The tx hash links straight to Polygonscan.
-
----
-
-## Stack
+```
+┌─────────────────────────────────────────────────┐
+│              DigitalOcean VPS (2GB)             │
+│                                                  │
+│   nginx :80                                      │
+│     ├── /api/*  →  Flask :5001  (MiroShark)     │
+│     └── /*      →  Vue.js :3000                 │
+│                                                  │
+│   Shared volume: /data/research/{marketId}/      │
+│     seed.md  sources.json  metadata.json         │
+└──────────────────┬──────────────────────────────┘
+                   │
+        ┌──────────┼──────────────┐
+        ▼          ▼              ▼
+  Polymarket    Neo4j          Together AI
+  Gamma API     Aura Free      Llama 3.1/3.3
+  CLOB API      (cloud)        (LLM calls)
+```
 
 | Layer | Technology |
 |-------|------------|
-| Frontend | Vue.js (MiroShark fork) |
-| Backend | Flask + MiroShark simulation engine |
-| Research agent | Together AI — Llama 3.3 70B (free tier) |
-| Swarm agents | Together AI — Llama 3.1 8B ($0.18/M tokens) |
+| Frontend | Vue.js 3 + Vite (MiroShark fork) |
+| Backend | Python Flask + MiroShark simulation engine |
+| Research agent | Together AI — Llama 3.3 70B Instruct Turbo **Free** |
+| Swarm agents | Together AI — Llama 3.1 8B Instruct Turbo ($0.18/M tokens) |
 | Knowledge graph | Neo4j Aura Free |
+| Web search | DuckDuckGo (no API key required) |
 | Prediction market | Polymarket Gamma API + CLOB API on Polygon |
-| Deployment | Docker Compose, DigitalOcean Droplet |
-
-**Cost per run:** research is free; swarm simulation ~$0.10–0.30.
+| Deployment | Docker Compose |
 
 ---
 
-## Setup
+## Quick Start
 
 ### Prerequisites
 
-- Node 18+, Python 3.11+, [uv](https://github.com/astral-sh/uv)
-- [Together AI key](https://api.together.xyz) (free tier works)
-- [Neo4j Aura Free](https://neo4j.com/cloud/aura-free/) instance
-- Polygon wallet funded with USDC
+| Tool | Version | Install |
+|------|---------|---------|
+| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
+| Python | 3.11+ | [python.org](https://python.org) |
+| uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Docker + Compose | latest | [docker.com](https://docs.docker.com/get-docker/) |
 
-### 1. Configure environment
+**External accounts needed:**
+- [Together AI](https://api.together.xyz) — free tier is enough
+- [Neo4j Aura Free](https://neo4j.com/cloud/aura-free/) — one free instance
+- Polygon wallet funded with USDC — for live bet placement
+
+### 1. Clone
+
+```bash
+git clone https://github.com/YOUR_USERNAME/seabw-2026.git
+cd seabw-2026
+```
+
+### 2. Configure
 
 ```bash
 cp web/.env.together-ai web/.env
 ```
 
-Fill in `web/.env`:
-- `LLM_API_KEY` — your Together AI key
-- `NEO4J_URI` + `NEO4J_PASSWORD` — Aura Free credentials
-- `POLYMARKET_PRIVATE_KEY` — Polygon wallet private key
-- `MIROSHARK_ADMIN_TOKEN` — run `openssl rand -hex 32`
-
-### 2. Install dependencies
+Open `web/.env` and fill in:
 
 ```bash
+# Together AI — get your key at api.together.xyz
+LLM_API_KEY=your_together_ai_key
+SMART_API_KEY=your_together_ai_key
+NER_API_KEY=your_together_ai_key
+WONDERWALL_API_KEY=your_together_ai_key
+OPENAI_API_KEY=your_together_ai_key
+EMBEDDING_API_KEY=your_together_ai_key
+
+# Neo4j Aura Free — create at neo4j.com/cloud/aura-free
+NEO4J_URI=neo4j+s://xxxx.databases.neo4j.io
+NEO4J_PASSWORD=your_aura_password
+
+# Polygon wallet — export private key from MetaMask
+# Must have USDC on Polygon mainnet for bet placement
+POLYMARKET_PRIVATE_KEY=your_wallet_private_key
+
+# Admin token — generate with: openssl rand -hex 32
+MIROSHARK_ADMIN_TOKEN=your_random_token
+```
+
+### 3. Install dependencies
+
+```bash
+# Node (frontend + root scripts)
 npm run setup --prefix web
+
+# Python (backend)
 cd web/backend && uv sync
 ```
 
-### 3. Run locally
+### 4. Run
 
 ```bash
 npm run dev --prefix web
 ```
 
-- Frontend: http://localhost:3000
-- Backend: http://localhost:5001
+- **App**: http://localhost:3000
+- **API**: http://localhost:5001
 
-### 4. Deploy (Docker)
+---
+
+## Docker Deployment
+
+For a DigitalOcean Droplet (2GB RAM / 40GB disk) or any VPS:
 
 ```bash
-git clone https://github.com/kon-rad/seabw-hackathon-2026.git
-cd seabw-hackathon-2026
+# On the server
+git clone https://github.com/YOUR_USERNAME/seabw-2026.git
+cd seabw-2026
 cp web/.env.together-ai web/.env
-# fill in web/.env
+nano web/.env  # fill in your keys
+
 docker compose up -d
 ```
 
-App runs on port 80.
+App runs on port 80. Monitor with `docker compose logs -f`.
+
+**RAM budget during peak (simulation running):**
+
+| Service | RAM |
+|---------|-----|
+| OS + nginx | 200 MB |
+| Vue.js (web) | 350 MB |
+| Flask (api) | 150 MB |
+| MiroShark simulation | 600 MB |
+| **Total peak** | **~1.3 GB** |
+
+Neo4j runs on Aura Free (cloud) — saves ~600MB vs running it locally.
+
+---
+
+## How to Use
+
+**1. Open the app** → the Scout automatically surfaces the top 8 Polymarket markets, scored by research potential.
+
+**2. Click "Research & Simulate"** on any market card → the research agent runs 4 rounds of web searches and builds a structured seed document in real time. Watch sources appear and the document grow.
+
+**3. Click "Run MiroShark Simulation →"** → MiroShark ingests the seed document, builds a knowledge graph, spawns 100+ agents, and runs a Polymarket platform simulation. The existing MiroShark dashboard shows agent conversations, market price evolution, and belief state heatmaps live.
+
+**4. When simulation completes** → a bet panel appears bottom-right with the swarm's recommendation (e.g. "Swarm: 73%, Market: 61%, Edge: +12%"). Enter your USDC amount and confirm.
+
+**5. Bet placed** → tx hash shown with a Polygonscan link. Your order is live on the Polymarket order book.
 
 ---
 
@@ -108,57 +179,90 @@ App runs on port 80.
 
 ```
 seabw-2026/
-  web/                          # MiroShark fork (Vue + Flask)
-    frontend/src/
-      views/
-        BetDiscovery.vue        # bet scouting home page
-        ResearchView.vue        # research agent UI
-      components/
-        BetPanel.vue            # bet placement widget
-    backend/app/api/
-      polymarket.py             # markets / research SSE / bet endpoints
-  docker-compose.yml
-  nginx.conf
+│
+├── web/                              # MiroShark fork (Vue.js + Flask)
+│   ├── frontend/
+│   │   └── src/
+│   │       ├── views/
+│   │       │   ├── BetDiscovery.vue  ← new: market scouting home page
+│   │       │   ├── ResearchView.vue  ← new: research agent UI with SSE stream
+│   │       │   └── [MiroShark views unchanged]
+│   │       ├── components/
+│   │       │   ├── BetPanel.vue      ← new: floating bet placement widget
+│   │       │   └── [MiroShark components unchanged]
+│   │       └── router/index.js       ← modified: new routes added
+│   │
+│   ├── backend/
+│   │   └── app/
+│   │       └── api/
+│   │           └── polymarket.py     ← new: markets / research SSE / CLOB bet
+│   │
+│   ├── .env.together-ai              ← Together AI config template
+│   └── Dockerfile
+│
+├── docker-compose.yml
+├── nginx.conf
+├── .env.example
+└── docs/
+    └── superpowers/specs/
+        └── 2026-05-20-miroshark-polymarket-design.md
 ```
 
----
+### New API Endpoints
 
-## Video Script
-
-*3-minute demo script — read straight through, no commentary needed.*
-
----
-
-Prediction markets are broken — not because they don't work, but because most people don't have the tools to use them well.
-
-Polymarket has hundreds of millions of dollars in volume. The questions are real: Will this candidate win? Will this bill pass? Will this token hit a new high? The crowd sets prices. And sometimes — the crowd is wrong.
-
-When a market is mispriced, there's an edge. A real, exploitable gap between what the market thinks will happen and what the evidence actually says. Finding that edge is the hard part.
-
-That's what MiroShark × Polymarket does.
-
-You open the app. It's already scanning live markets — scoring each one for research potential. Volume, topic, time to resolution, how far the price is from fifty-fifty. The top opportunities surface automatically. No hunting. No spreadsheets.
-
-Pick a market. One click starts the research agent. It runs four rounds of targeted web searches — latest news, historical statistics, expert analysis, key players. It reads the sources. It extracts facts, numbers, sentiment signals. It builds a structured research document in real time. You watch it happen.
-
-When the research is done, you run the simulation. MiroShark spawns over a hundred AI agents — each one with a different persona, a different risk tolerance, a different prior belief about the outcome. They read the research. They argue. They post takes. They place trades inside the simulation and update their beliefs as new information flows through.
-
-The swarm converges on a number. A probability. And we compare it to the market price.
-
-If the swarm thinks there's a 73% chance of YES — and the market is pricing it at 61% — that's a twelve-point edge. That's the signal.
-
-One button. Enter your USDC amount. Confirm. The order goes live on Polymarket's order book via the Polygon blockchain. The transaction hash appears on screen. Your bet is in.
-
-The whole thing — from opening the app to a live bet — takes about fifteen minutes. The research is free. The simulation costs less than a quarter. The edge is real.
-
-This is what systematic prediction market trading looks like when it's accessible to everyone, not just the teams running quantitative research operations.
-
-MiroShark × Polymarket. Built at SEABW 2026.
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/polymarket/markets` | Top 8 scored Polymarket markets |
+| `GET` | `/api/polymarket/research/<market_id>` | SSE: 4-round research agent stream |
+| `POST` | `/api/polymarket/bet` | Place limit order on Polymarket CLOB |
 
 ---
 
-## Notes
+## Contributing
 
-- RAM usage peaks at ~1.3GB during simulation — fits a 2GB droplet when Neo4j runs on Aura Free
-- Payments are stubbed as free for the demo; the architecture supports USDC-on-Polygon payment gates
-- One simulation runs at a time (MVP scope)
+We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for full details.
+
+**Quick version:**
+
+```bash
+# Fork the repo, then:
+git clone https://github.com/YOUR_USERNAME/seabw-2026.git
+cd seabw-2026
+cp web/.env.together-ai web/.env  # fill in keys
+npm run setup --prefix web && cd web/backend && uv sync
+
+# Create a branch
+git checkout -b feat/your-feature
+
+# Make changes, then open a PR
+```
+
+Good first issues are tagged [`good first issue`](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+
+---
+
+## Roadmap
+
+- [ ] Multi-simulation queue (run multiple markets in parallel)
+- [ ] Portfolio tracking (P&L across all placed bets)
+- [ ] USDC-on-Polygon payment gate for public deployment
+- [ ] Market alert system (notify when a high-edge opportunity is found)
+- [ ] Simulation comparison (run the same market with different research depths)
+- [ ] Historical backtest (did the swarm beat the market on past events?)
+
+---
+
+## License
+
+This project is a fork of [MiroShark](https://github.com/aaronjmars/MiroShark) and is licensed under the **GNU Affero General Public License v3.0** — see [web/LICENSE](web/LICENSE).
+
+The AGPL requires that if you run a modified version as a network service, you must make the source available to users of that service.
+
+---
+
+## Credits
+
+- **[MiroShark](https://github.com/aaronjmars/MiroShark)** by [@aaronjmars](https://github.com/aaronjmars) — Universal Swarm Intelligence Engine
+- **[Polymarket](https://polymarket.com)** — prediction market platform
+- **[Together AI](https://api.together.xyz)** — LLM inference
+- Built at **SEABW 2026** (Southeast Asia Builders Week)
