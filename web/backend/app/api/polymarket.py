@@ -373,3 +373,120 @@ def save_simulation_context():
 
     logger.info(f"Saved polymarket context for project {project_id}: {ctx['title']}")
     return jsonify({"success": True, "project_id": project_id})
+
+
+@polymarket_bp.route("/simulate/<project_id>/result", methods=["GET"])
+def get_simulation_result(project_id: str):
+    """
+    Compute and return the Polymarket recommendation for a completed simulation.
+    Returns 200 with status="pending" if simulation is still running.
+    """
+    from ..models.project import ProjectManager
+    from ..services.simulation_manager import SimulationManager
+    from ..services.simulation_runner import SimulationRunner
+
+    # Load stored Polymarket context
+    try:
+        project_dir = Path(ProjectManager._get_project_dir(project_id))
+    except Exception:
+        return jsonify({"success": False, "error": f"Project not found: {project_id}"}), 404
+
+    ctx_path = project_dir / "polymarket_context.json"
+    if not ctx_path.exists():
+        return jsonify({"success": False, "error": "No Polymarket context saved for this project"}), 404
+
+    ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+    market_yes_price = float(ctx.get("yes_price", 0.5))
+
+    # Find the most recent simulation for this project
+    manager = SimulationManager()
+    simulations = manager.list_simulations(project_id=project_id)
+    if not simulations:
+        return jsonify({"success": True, "status": "no_simulation",
+                        "message": "No simulation found for this project yet"}), 200
+
+    sim = sorted(simulations, key=lambda s: s.created_at, reverse=True)[0]
+    simulation_id = sim.simulation_id
+
+    # Check run status
+    run_state = SimulationRunner.get_run_state(simulation_id)
+    if not run_state:
+        return jsonify({"success": True, "status": "not_started",
+                        "simulation_id": simulation_id}), 200
+
+    if run_state.runner_status.value not in ("completed", "stopped"):
+        return jsonify({
+            "success": True,
+            "status": run_state.runner_status.value,
+            "simulation_id": simulation_id,
+            "progress_percent": run_state.to_dict().get("progress_percent", 0),
+        }), 200
+
+    # Read final swarm price from polymarket.db
+    db_path = Path(SimulationRunner.RUN_STATE_DIR) / simulation_id / "polymarket.db"
+    swarm_price = None
+
+    if db_path.exists():
+        import sqlite3
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT reserve_a, reserve_b FROM market WHERE market_id = 1"
+                ).fetchone()
+                if row:
+                    ra, rb = float(row[0] or 0), float(row[1] or 0)
+                    total = ra + rb
+                    swarm_price = round(rb / total, 4) if total > 0 else 0.5
+        except sqlite3.Error as e:
+            logger.warning(f"Could not read polymarket.db for {simulation_id}: {e}")
+
+    if swarm_price is None:
+        return jsonify({
+            "success": True,
+            "status": "completed_no_markets",
+            "simulation_id": simulation_id,
+            "message": "Simulation completed but no prediction markets were generated.",
+        }), 200
+
+    edge = round(swarm_price - market_yes_price, 4)
+    abs_edge = abs(edge)
+
+    recommendation = "YES" if edge > 0 else "NO"
+    if abs_edge >= 0.10:
+        confidence = "HIGH"
+    elif abs_edge >= 0.04:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    direction = "above" if edge > 0 else "below"
+    reasoning = (
+        f"The swarm ({swarm_price * 100:.1f}%) settled {direction} the Polymarket price "
+        f"({market_yes_price * 100:.1f}%) by {abs_edge * 100:.1f} pp. "
+        + ("Strong edge — likely tradeable." if abs_edge >= 0.10
+           else "Moderate edge — check liquidity before sizing." if abs_edge >= 0.04
+           else "Weak edge — fees may eat the spread.")
+    )
+
+    result = {
+        "success": True,
+        "status": "completed",
+        "simulation_id": simulation_id,
+        "recommendation": recommendation,
+        "swarm_price": swarm_price,
+        "market_price": market_yes_price,
+        "edge": edge,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "condition_id": ctx.get("condition_id", ""),
+        "title": ctx.get("title", ""),
+    }
+
+    # Persist result for later inspection
+    out_dir = Path(SimulationRunner.RUN_STATE_DIR) / simulation_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "result.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return jsonify(result)
