@@ -349,7 +349,7 @@ def save_simulation_context():
     """Store Polymarket market context alongside a MiroShark project_id."""
     data = request.get_json(force=True)
     project_id = data.get("project_id")
-    if not project_id:
+    if not project_id or not project_id.startswith("proj_"):
         return jsonify({"success": False, "error": "project_id required"}), 400
 
     from ..models.project import ProjectManager
@@ -357,19 +357,28 @@ def save_simulation_context():
     if not project:
         return jsonify({"success": False, "error": f"Project not found: {project_id}"}), 404
 
+    try:
+        yes_price_val = float(data.get("yes_price", 0.5))
+    except (ValueError, TypeError):
+        yes_price_val = 0.5
+
     ctx = {
         "market_id": data.get("market_id", ""),
         "condition_id": data.get("condition_id", ""),
         "title": data.get("title", ""),
-        "yes_price": float(data.get("yes_price", 0.5)),
+        "yes_price": yes_price_val,
         "resolution_date": data.get("resolution_date", ""),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
 
     project_dir = Path(ProjectManager._get_project_dir(project_id))
-    (project_dir / "polymarket_context.json").write_text(
-        json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    try:
+        (project_dir / "polymarket_context.json").write_text(
+            json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        logger.error(f"Failed to write polymarket context for {project_id}: {e}")
+        return jsonify({"success": False, "error": "Failed to save context"}), 500
 
     logger.info(f"Saved polymarket context for project {project_id}: {ctx['title']}")
     return jsonify({"success": True, "project_id": project_id})
