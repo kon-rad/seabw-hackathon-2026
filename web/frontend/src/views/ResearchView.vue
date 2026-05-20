@@ -189,14 +189,7 @@ async function runSimulation() {
   simLoading.value = true
   simError.value = ''
   try {
-    // Save Polymarket context so BetPanel can retrieve it in the Report view
-    sessionStorage.setItem('polymarket_context', JSON.stringify({
-      condition_id: conditionId,
-      title,
-      yes_price: yesPrice,
-    }))
-
-    // Upload seed.md to MiroShark as a new project
+    // 1. Upload seed.md to create a MiroShark project
     const blob = new Blob([seedText.value], { type: 'text/markdown' })
     const formData = new FormData()
     formData.append('files', blob, 'seed.md')
@@ -207,10 +200,35 @@ async function runSimulation() {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
-    if (res.data.success && res.data.data?.project_id) {
-      router.push({ name: 'Process', params: { projectId: res.data.data.project_id } })
+    if (res.success && res.data?.project_id) {
+      const projectId = res.data.project_id
+
+      // 2. Store Polymarket market context alongside the project for result computation
+      try {
+        await api.post('/api/polymarket/simulate/context', {
+          project_id: projectId,
+          market_id: marketId,
+          condition_id: conditionId,
+          title,
+          yes_price: parseFloat(yesPrice || 0.5),
+          resolution_date: '',
+        })
+      } catch (ctxErr) {
+        console.warn('Could not save polymarket context:', ctxErr)
+      }
+
+      // 3. Save context to sessionStorage so ReportView can fetch the recommendation
+      sessionStorage.setItem('polymarket_context', JSON.stringify({
+        condition_id: conditionId,
+        title,
+        yes_price: yesPrice,
+        project_id: projectId,
+      }))
+
+      // 4. Navigate to MiroShark simulation flow
+      router.push({ name: 'Process', params: { projectId } })
     } else {
-      throw new Error(res.data.error || 'Failed to create project')
+      throw new Error(res.error || 'Failed to create project')
     }
   } catch (e) {
     simError.value = e.message || 'Failed to start simulation'
