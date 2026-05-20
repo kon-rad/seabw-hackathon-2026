@@ -460,15 +460,24 @@ def get_simulation_result(project_id: str):
     edge = round(swarm_price - market_yes_price, 4)
     abs_edge = abs(edge)
 
-    recommendation = "YES" if edge > 0 else "NO"
-    if abs_edge >= 0.10:
+    if edge > 0:
+        recommendation = "YES"
+        direction = "above"
+    elif edge < 0:
+        recommendation = "NO"
+        direction = "below"
+    else:
+        recommendation = "NEUTRAL"
+        direction = "at"
+
+    if abs_edge == 0:
+        confidence = "LOW"
+    elif abs_edge >= 0.10:
         confidence = "HIGH"
     elif abs_edge >= 0.04:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"
-
-    direction = "above" if edge > 0 else "below"
     reasoning = (
         f"The swarm ({swarm_price * 100:.1f}%) settled {direction} the Polymarket price "
         f"({market_yes_price * 100:.1f}%) by {abs_edge * 100:.1f} pp. "
@@ -491,11 +500,13 @@ def get_simulation_result(project_id: str):
         "title": ctx.get("title", ""),
     }
 
-    # Persist result for later inspection
+    # Persist result for later inspection (write only once to stay idempotent)
     out_dir = Path(SimulationRunner.RUN_STATE_DIR) / simulation_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "result.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    result_path = out_dir / "result.json"
+    if not result_path.exists():
+        out_dir.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     return jsonify(result)
