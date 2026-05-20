@@ -29,10 +29,18 @@
           @click="selectMarket(m)"
         >
           <div class="card-top">
-            <span class="score-badge" :class="scoreBadgeClass(m.score)">{{ m.score }}/100</span>
+            <span class="score-badge" :class="scoreBadgeClass(m.score)">{{ m.score }}</span>
             <span v-if="m.category" class="category-tag">{{ m.category }}</span>
           </div>
           <h3 class="card-title">{{ m.title }}</h3>
+          <div v-if="m.sim_tags && m.sim_tags.length" class="sim-tags">
+            <span
+              v-for="tag in m.sim_tags"
+              :key="tag"
+              class="sim-tag"
+              :class="tag.endsWith('⚠') ? 'sim-tag-warn' : 'sim-tag-ok'"
+            >{{ tag }}</span>
+          </div>
           <p class="card-desc">{{ m.description }}</p>
           <div class="card-meta">
             <div class="meta-item">
@@ -77,8 +85,8 @@ async function fetchMarkets() {
   loading.value = true
   error.value = ''
   try {
-    const res = await api.get('/api/polymarket/markets')
-    markets.value = res.data.markets || []
+    const res = await api.get('/api/polymarket/markets', { params: { _t: Date.now() } })
+    markets.value = res.markets || []
   } catch (e) {
     error.value = e.message || 'Failed to load markets'
   } finally {
@@ -115,8 +123,8 @@ function formatDate(s) {
 }
 
 function scoreBadgeClass(score) {
-  if (score >= 70) return 'badge-green'
-  if (score >= 45) return 'badge-yellow'
+  if (score >= 80) return 'badge-green'
+  if (score >= 50) return 'badge-yellow'
   return 'badge-gray'
 }
 
@@ -255,6 +263,33 @@ onBeforeUnmount(() => {
   margin: 0;
   line-height: 1.4;
   color: #e8e8e8;
+}
+
+.sim-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sim-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.sim-tag-ok {
+  background: #0a1f12;
+  color: #4ade80;
+  border: 1px solid #1a3a22;
+}
+
+.sim-tag-warn {
+  background: #1f1205;
+  color: #fb923c;
+  border: 1px solid #3a2010;
 }
 
 .card-desc {

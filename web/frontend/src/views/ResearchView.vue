@@ -115,6 +115,7 @@ let eventSource = null
 
 const statusLabel = computed(() => {
   if (done.value) return '✓ Research complete'
+  if (currentRound.value === 0 && started.value) return 'Fetching live data…'
   if (started.value) return `Round ${currentRound.value}/4`
   return 'Ready to research'
 })
@@ -164,17 +165,26 @@ function handleEvent(msg) {
       break
     case 'round_start':
       currentRound.value = msg.round
-      roundMessages.value.push({ type: 'round_start', text: `Round ${msg.round}: ${msg.label} — "${msg.query}"` })
+      roundMessages.value.push({
+        type: 'round_start',
+        text: msg.round === 0
+          ? `Fetching live data — "${msg.query}"`
+          : `Round ${msg.round}: ${msg.label} — "${msg.query}"`,
+      })
       break
     case 'source_found':
       sources.value.push({ url: msg.url, title: msg.title, round: msg.round })
       break
     case 'round_complete':
-      completedRounds.value = msg.round
+      if (msg.round > 0) completedRounds.value = msg.round
       if (msg.facts) {
-        seedText.value += (seedText.value ? '\n\n' : '') + `## Round ${msg.round}\n${msg.facts}`
+        const label = msg.round === 0 ? 'Live Market Data' : `Round ${msg.round}`
+        seedText.value += (seedText.value ? '\n\n' : '') + `## ${label}\n${msg.facts}`
       }
-      roundMessages.value.push({ type: 'round_complete', text: `Round ${msg.round} complete` })
+      roundMessages.value.push({
+        type: 'round_complete',
+        text: msg.round === 0 ? 'Live data fetched' : `Round ${msg.round} complete`,
+      })
       break
     case 'research_complete':
       done.value = true
@@ -196,7 +206,7 @@ async function runSimulation() {
     formData.append('project_name', title)
     formData.append('simulation_requirement', `Polymarket prediction market simulation for: ${title}`)
 
-    const res = await api.post('/api/graph/project/upload', formData, {
+    const res = await api.post('/api/graph/ontology/generate', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
@@ -228,7 +238,7 @@ async function runSimulation() {
       // 4. Navigate to MiroShark simulation flow
       router.push({ name: 'Process', params: { projectId } })
     } else {
-      throw new Error(res.error || 'Failed to create project')
+      throw new Error(res.error || 'Failed to create project — no project_id returned')
     }
   } catch (e) {
     simError.value = e.message || 'Failed to start simulation'
