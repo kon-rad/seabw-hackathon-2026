@@ -200,7 +200,7 @@ async function runSimulation() {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
-    if (res.success && res.data?.project_id) {
+    if (res.data?.project_id) {
       const projectId = res.data.project_id
 
       // 2. Store Polymarket market context alongside the project for result computation
