@@ -108,7 +108,7 @@ def _score_market(m: dict) -> int:
     # Price edge (not near 50/50)
     try:
         best_ask = float((m.get("bestAsk") or m.get("best_ask") or 0.5))
-        if abs(best_ask - 0.5) > 0.15:
+        if abs(best_ask - 0.5) > 0.1:
             score += 15
         elif abs(best_ask - 0.5) > 0.05:
             score += 5
