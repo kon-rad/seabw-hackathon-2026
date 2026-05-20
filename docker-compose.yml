@@ -58,6 +58,7 @@ services:
 
       # Polymarket
       - POLYMARKET_PRIVATE_KEY=${POLYMARKET_PRIVATE_KEY}
+      - SIMULATION_PLATFORM=polymarket
 
       # Research agent model (free tier)
       - RESEARCH_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
@@ -76,6 +77,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  research_data:
+  research_data:       # mounted at /app/backend/uploads/ in the web container
   certbot_www:
   certbot_certs:
