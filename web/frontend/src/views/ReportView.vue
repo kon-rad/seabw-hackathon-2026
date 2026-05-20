@@ -68,7 +68,7 @@
     </main>
 
     <!-- Polymarket recommendation banner -->
-    <div v-if="pmResult && pmResult.status === 'completed'" class="pm-recommendation-banner" :class="'banner-' + pmResult.recommendation.toLowerCase()">
+    <div v-if="pmResult && pmResult.status === 'completed'" class="pm-recommendation-banner" :class="'banner-' + (pmResult.recommendation?.toLowerCase() ?? 'neutral')">
       <div class="banner-verdict">
         BET {{ pmResult.recommendation }}
         <span class="banner-confidence">{{ pmResult.confidence }}</span>
