@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">MIROSHARK</div>
+        <div class="brand" @click="router.push('/')">SIMULATION AGENT</div>
       </div>
       
       <div class="header-center">
@@ -426,7 +426,7 @@ watchEffect(() => {
   const step = currentStep.value
   const status = statusClass.value
   const dot = status === 'processing' ? '\uD83D\uDFE0' : status === 'error' ? '\uD83D\uDD34' : status === 'completed' ? '\uD83D\uDFE2' : ''
-  document.title = dot ? `${dot} (${step}/4) MiroShark` : `(${step}/4) MiroShark`
+  document.title = dot ? `${dot} (${step}/4) Simulation Agent` : `(${step}/4) Simulation Agent`
 })
 
 onMounted(() => {
@@ -434,7 +434,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  document.title = 'MiroShark'
+  document.title = 'Simulation Agent'
   stopPolling()
   stopGraphPolling()
 })

@@ -1,7 +1,7 @@
 <template>
   <div class="research-view">
     <nav class="navbar">
-      <div class="nav-brand">MIROSHARK <span class="nav-sub">× POLYMARKET</span></div>
+      <div class="nav-brand">SIMULATION AGENT <span class="nav-sub">× POLYMARKET</span></div>
       <button class="back-btn" @click="router.push({ name: 'BetDiscovery' })">← Back</button>
     </nav>
 
@@ -78,7 +78,7 @@
           @click="runSimulation"
           :disabled="simLoading"
         >
-          {{ simLoading ? 'Starting simulation…' : 'Run MiroShark Simulation →' }}
+          {{ simLoading ? 'Starting simulation…' : 'Run Simulation →' }}
         </button>
       </div>
 

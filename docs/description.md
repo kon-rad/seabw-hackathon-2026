@@ -1,0 +1,5 @@
+Simulation Agent x Polymarket
+
+Prediction markets misprice events constantly, and finding that edge requires monitoring hundreds of markets, doing deep research, and synthesizing it into a probability estimate you trust enough to act on. Simulation Agent does this automatically. It scouts live Polymarket markets and scores them for exploitable inefficiency, then launches a web research agent that pulls news, statistics, and expert analysis across four rounds and compiles everything into a structured document in real time. That document is fed into a swarm of 100-plus AI agents, each with a distinct persona and priors, who read the research, argue, trade, and converge on a probability through a full simulated Polymarket run. When the swarm's estimate diverges meaningfully from the live market price, you have found edge, and a single confirmation places your limit order directly on the Polymarket order book on Polygon mainnet. The entire loop from market discovery to placed bet takes minutes and costs less than a dollar.
+
+

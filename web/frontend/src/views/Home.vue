@@ -2,7 +2,7 @@
   <div class="home-container">
     <!-- Top Navigation Bar -->
     <nav class="navbar">
-      <div class="nav-brand">MIROSHARK</div>
+      <div class="nav-brand">SIMULATION AGENT</div>
       <div class="nav-links">
         <router-link to="/explore" class="explore-link" :title="$tr('Browse public simulations', '浏览公开模拟')">
           <span class="compass">◎</span> {{ $tr('Explore', '浏览') }}
@@ -68,10 +68,10 @@
 
         <div class="hero-desc">
           <p v-if="!$isZh()">
-            Drop in anything — a press release, a news headline, a policy draft, a question you can't answer, a historical what-if — and <span class="highlight-bold">MiroShark</span> spawns <span class="highlight-orange">hundreds of agents</span> that react to it hour by hour. Posting, arguing, trading, changing their minds.
+            Drop in anything — a press release, a news headline, a policy draft, a question you can't answer, a historical what-if — and <span class="highlight-bold">Simulation Agent</span> spawns <span class="highlight-orange">hundreds of agents</span> that react to it hour by hour. Posting, arguing, trading, changing their minds.
           </p>
           <p v-else>
-            放入任何素材 — 新闻稿、头条、政策草案、一个无解的问题、一段历史假设 — <span class="highlight-bold">MiroShark</span> 会派出<span class="highlight-orange">数百个智能体</span>,每小时一轮地做出反应。发帖、辩论、交易、改变想法。
+            放入任何素材 — 新闻稿、头条、政策草案、一个无解的问题、一段历史假设 — <span class="highlight-bold">Simulation Agent</span> 会派出<span class="highlight-orange">数百个智能体</span>,每小时一轮地做出反应。发帖、辩论、交易、改变想法。
           </p>
           <p class="slogan-text">
             {{ $tr("Don't predict the future. Simulate it", '不要预测未来。模拟它') }}<span class="blinking-cursor">_</span>
@@ -109,7 +109,7 @@
                 <span class="step-num">01</span>
                 <div class="step-info">
                   <div class="step-title">{{ $tr('You bring a scenario', '你提供一个情景') }}</div>
-                  <div class="step-desc">{{ $tr('MiroShark builds the world around it — extracts actors, stakes, and open questions from your input.', 'MiroShark 围绕它构建世界 — 从你的输入中提取角色、利害关系与待解问题。') }}</div>
+                  <div class="step-desc">{{ $tr('Simulation Agent builds the world around it — extracts actors, stakes, and open questions from your input.', 'Simulation Agent 围绕它构建世界 — 从你的输入中提取角色、利害关系与待解问题。') }}</div>
                 </div>
               </div>
               <div class="workflow-item">
@@ -317,7 +317,7 @@
                   rows="6"
                   :disabled="loading"
                 ></textarea>
-                <div class="model-badge">{{ $tr('Engine: MiroShark-V1.0', '引擎:MiroShark-V1.0') }}</div>
+                <div class="model-badge">{{ $tr('Engine: Simulation Agent V1.0', '引擎:Simulation Agent V1.0') }}</div>
               </div>
 
               <!-- Share-as-link — copy a URL that drops a reader into this

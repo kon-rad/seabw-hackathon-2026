@@ -1,4 +1,4 @@
-# MiroShark × Polymarket
+# Simulation Agent × Polymarket
 
 > AI-powered prediction market scout — finds the best bets, researches them, simulates outcomes with a 100-agent swarm, and places the trade on Polygon mainnet.
 
@@ -13,11 +13,11 @@
 
 Prediction markets misprice events. When they do, there's an edge. Finding that edge requires continuously monitoring markets, running deep research, and synthesizing it into a probability estimate — faster than the market corrects.
 
-**MiroShark × Polymarket does this automatically:**
+**Simulation Agent × Polymarket does this automatically:**
 
 1. **Scout** — fetches live Polymarket markets, scores them for AI-researchability (volume, topic, price inefficiency, time to resolution)
 2. **Research** — a 4-round web agent digs into the market: news, statistics, expert analysis, key entities — compiling a structured seed document
-3. **Simulate** — MiroShark spawns 100+ AI agents with distinct personas who read the research, argue, post, trade, and update beliefs round by round
+3. **Simulate** — Simulation Agent spawns 100+ AI agents with distinct personas who read the research, argue, post, trade, and update beliefs round by round
 4. **Bet** — when the swarm price diverges from the market price, one click places a limit order on the Polymarket CLOB on Polygon mainnet
 
 **Cost per run:** research is free (Llama 3.3 70B free tier); simulation is ~$0.10–0.30.
@@ -31,7 +31,7 @@ Prediction markets misprice events. When they do, there's an edge. Finding that 
 │              DigitalOcean VPS (2GB)             │
 │                                                  │
 │   nginx :80                                      │
-│     ├── /api/*  →  Flask :5001  (MiroShark)     │
+│     ├── /api/*  →  Flask :5001  (Simulation Agent) │
 │     └── /*      →  Vue.js :3000                 │
 │                                                  │
 │   Shared volume: /data/research/{marketId}/      │
@@ -47,8 +47,8 @@ Prediction markets misprice events. When they do, there's an edge. Finding that 
 
 | Layer | Technology |
 |-------|------------|
-| Frontend | Vue.js 3 + Vite (MiroShark fork) |
-| Backend | Python Flask + MiroShark simulation engine |
+| Frontend | Vue.js 3 + Vite |
+| Backend | Python Flask + Simulation Agent engine |
 | Research agent | Together AI — Llama 3.3 70B Instruct Turbo **Free** |
 | Swarm agents | Together AI — Llama 3.1 8B Instruct Turbo ($0.18/M tokens) |
 | Knowledge graph | Neo4j Aura Free |
@@ -154,7 +154,7 @@ App runs on port 80. Monitor with `docker compose logs -f`.
 | OS + nginx | 200 MB |
 | Vue.js (web) | 350 MB |
 | Flask (api) | 150 MB |
-| MiroShark simulation | 600 MB |
+| Simulation engine | 600 MB |
 | **Total peak** | **~1.3 GB** |
 
 Neo4j runs on Aura Free (cloud) — saves ~600MB vs running it locally.
@@ -167,7 +167,7 @@ Neo4j runs on Aura Free (cloud) — saves ~600MB vs running it locally.
 
 **2. Click "Research & Simulate"** on any market card → the research agent runs 4 rounds of web searches and builds a structured seed document in real time. Watch sources appear and the document grow.
 
-**3. Click "Run MiroShark Simulation →"** → MiroShark ingests the seed document, builds a knowledge graph, spawns 100+ agents, and runs a Polymarket platform simulation. The existing MiroShark dashboard shows agent conversations, market price evolution, and belief state heatmaps live.
+**3. Click "Run Simulation →"** → Simulation Agent ingests the seed document, builds a knowledge graph, spawns 100+ agents, and runs a Polymarket platform simulation. The dashboard shows agent conversations, market price evolution, and belief state heatmaps live.
 
 **4. When simulation completes** → a bet panel appears bottom-right with the swarm's recommendation (e.g. "Swarm: 73%, Market: 61%, Edge: +12%"). Enter your USDC amount and confirm.
 
@@ -180,16 +180,16 @@ Neo4j runs on Aura Free (cloud) — saves ~600MB vs running it locally.
 ```
 seabw-2026/
 │
-├── web/                              # MiroShark fork (Vue.js + Flask)
+├── web/                              # Vue.js + Flask
 │   ├── frontend/
 │   │   └── src/
 │   │       ├── views/
-│   │       │   ├── BetDiscovery.vue  ← new: market scouting home page
-│   │       │   ├── ResearchView.vue  ← new: research agent UI with SSE stream
-│   │       │   └── [MiroShark views unchanged]
+│   │       │   ├── BetDiscovery.vue  ← market scouting home page
+│   │       │   ├── ResearchView.vue  ← research agent UI with SSE stream
+│   │       │   └── [other views]
 │   │       ├── components/
-│   │       │   ├── BetPanel.vue      ← new: floating bet placement widget
-│   │       │   └── [MiroShark components unchanged]
+│   │       │   ├── BetPanel.vue      ← floating bet placement widget
+│   │       │   └── [other components]
 │   │       └── router/index.js       ← modified: new routes added
 │   │
 │   ├── backend/
