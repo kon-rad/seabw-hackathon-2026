@@ -33,6 +33,7 @@ services:
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL:-https://aum.lol}
     container_name: miroshark-polymarket
+    env_file: .env
     environment:
       # Flask backend
       - FLASK_HOST=0.0.0.0
