@@ -1,7 +1,7 @@
 <template>
   <div class="bet-discovery">
     <nav class="navbar">
-      <div class="nav-brand">SIMULATION AGENT <span class="nav-sub">× POLYMARKET</span></div>
+      <div class="nav-brand">SimulationAgent <span class="nav-sub">× POLYMARKET</span></div>
       <div class="nav-links">
         <a href="https://polymarket.com" target="_blank" class="explore-link">Polymarket ↗</a>
         <a href="https://github.com/aaronjmars/MiroShark" target="_blank" class="github-link">GitHub ↗</a>

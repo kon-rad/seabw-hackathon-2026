@@ -1,4 +1,4 @@
-# Simulation Agent × Polymarket
+# Simulation Agent
 
 > AI-powered prediction market scout — finds the best bets, researches them, simulates outcomes with a 100-agent swarm, and places the trade on Polygon mainnet.
 
@@ -13,7 +13,7 @@
 
 Prediction markets misprice events. When they do, there's an edge. Finding that edge requires continuously monitoring markets, running deep research, and synthesizing it into a probability estimate — faster than the market corrects.
 
-**Simulation Agent × Polymarket does this automatically:**
+**Simulation Agent does this automatically:**
 
 1. **Scout** — fetches live Polymarket markets, scores them for AI-researchability (volume, topic, price inefficiency, time to resolution)
 2. **Research** — a 4-round web agent digs into the market: news, statistics, expert analysis, key entities — compiling a structured seed document

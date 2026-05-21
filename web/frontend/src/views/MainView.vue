@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">SIMULATION AGENT</div>
+        <div class="brand" @click="router.push('/')">SimulationAgent</div>
       </div>
       
       <div class="header-center">

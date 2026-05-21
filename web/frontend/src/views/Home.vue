@@ -2,7 +2,7 @@
   <div class="home-container">
     <!-- Top Navigation Bar -->
     <nav class="navbar">
-      <div class="nav-brand">SIMULATION AGENT</div>
+      <div class="nav-brand">SimulationAgent</div>
       <div class="nav-links">
         <router-link to="/explore" class="explore-link" :title="$tr('Browse public simulations', '浏览公开模拟')">
           <span class="compass">◎</span> {{ $tr('Explore', '浏览') }}
